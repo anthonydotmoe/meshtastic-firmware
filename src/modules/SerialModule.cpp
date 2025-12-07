@@ -9,6 +9,9 @@
 #include <Arduino.h>
 #include <Throttle.h>
 
+#include "RenogyChargeController.h"
+RenogyChargeController *g_renogy = nullptr;
+
 /*
     SerialModule
         A simple interface to send messages over the mesh network by sending strings
@@ -230,6 +233,16 @@ int32_t SerialModule::runOnce()
 #endif
             serialModuleRadio = new SerialModuleRadio();
 
+            if (moduleConfig.serial.mode == (_meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9) {
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+                g_renogy = new RenogyChargeController(Serial1, 255);
+#elif defined(ARCH_ESP32)
+                g_renogy = new RenogyChargeController(Serial2, 255);
+#else
+                g_renogy = new RenogyChargeController(Serial2, 255);
+#endif
+            }
+
             firstTime = 0;
 
             // in API mode send rebooted sequence
@@ -276,6 +289,9 @@ int32_t SerialModule::runOnce()
                 }
             }
 #endif
+            else if ((moduleConfig.serial.mode == (meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9)) {
+                processRenogySerial();
+            }
             else {
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
                 while (Serial1.available()) {
@@ -526,6 +542,21 @@ ParsedLine parseLine(const char *line)
         *valueEnd-- = '\0';
 
     return result;
+}
+
+void SerialModule::processRenogySerial()
+{
+    static uint32_t lastPollMs = 0;
+    const uint32_t pollIntervalMs = 10000; //TODO: 5 seconds for testing
+
+    if (!Throttle::isWithinTimespanMs(lastPollMs, pollIntervalMs) || lastPollMs == 0) {
+        lastPollMs = millis();
+        if (g_renogy) {
+            g_renogy->poll();
+        }
+    }
+
+    //TODO: Service any queued commands
 }
 
 /**
