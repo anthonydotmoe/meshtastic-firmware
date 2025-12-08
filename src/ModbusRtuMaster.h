@@ -35,8 +35,8 @@ private:
     uint16_t  m_readAddress;
     uint16_t  m_readQty;
     uint16_t  m_responseBuffer[m_maxBufferSize];
-    uint8_t   m_responseBufferIndex;
-    uint16_t  m_responseBufferLength;
+//  uint8_t   m_responseBufferIndex;
+//  uint16_t  m_responseBufferLength;
     uint16_t  m_writeAddress;
     uint16_t  m_writeQty;
     uint16_t  m_transmitBuffer[m_maxBufferSize];

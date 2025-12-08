@@ -14,8 +14,6 @@ struct RenogyStatus {
     
 };
 
-class ModbusRtuMaster;
-
 class RenogyChargeController {
 public:
     RenogyChargeController(Stream &serial, uint8_t slaveId);
@@ -34,5 +32,3 @@ private:
     ModbusRtuMaster m_modbus;
     RenogyStatus    m_status;
 };
-
-extern RenogyStatus g_renogyStatus;

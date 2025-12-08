@@ -52,141 +52,155 @@ ModbusRtuMaster::Error ModbusRtuMaster::readHoldingRegisters(uint16_t startAddr,
     return transact(ReadHoldingRegisters);
 }
 
+static inline void append_u16(uint8_t *buf, uint8_t &len, uint16_t value)
+{
+    buf[len++] = highByte(value);
+    buf[len++] = lowByte(value);
+}
+
 // https://github.com/syvic/ModbusMaster
 ModbusRtuMaster::Error ModbusRtuMaster::transact(ModbusFunction func)
 {
-    uint8_t modbusADU[256];
-    uint8_t modbusADUSize = 0;
+    uint8_t  adu[256];
+    uint8_t  aduSize   = 0;
     uint16_t crc;
     uint32_t startTime;
-    uint8_t i;
-    uint8_t bytesLeft = 8;
-    Error status = OK;
+    uint8_t  i;
+    uint8_t  bytesLeft = 8;  // initial minimum to decide frame shape
+    Error    status    = OK;
 
-    // Assemble Modbus request ADU
-    modbusADU[modbusADUSize++] = m_slaveId;
-    modbusADU[modbusADUSize++] = static_cast<uint8_t>(func);
+    // Header
+    adu[aduSize++] = m_slaveId;
+    adu[aduSize++] = static_cast<uint8_t>(func);
 
+    // PDU
     switch (func) {
         case ReadHoldingRegisters:
-            modbusADU[modbusADUSize++] = highByte(m_readAddress);
-            modbusADU[modbusADUSize++] = lowByte(m_readAddress);
-            modbusADU[modbusADUSize++] = highByte(m_readQty);
-            modbusADU[modbusADUSize++] = lowByte(m_readQty);
+            append_u16(adu, aduSize, m_readAddress);
+            append_u16(adu, aduSize, m_readQty);
             break;
-    }
 
-    switch (func) {
         case WriteSingleRegister:
-            modbusADU[modbusADUSize++] = highByte(m_writeAddress);
-            modbusADU[modbusADUSize++] = lowByte(m_writeAddress);
+            append_u16(adu, aduSize, m_writeAddress);
+            append_u16(adu, aduSize, m_transmitBuffer[0]);
             break;
     }
 
-    switch (func) {
-        case WriteSingleRegister:
-            modbusADU[modbusADUSize++] = highByte(m_transmitBuffer[0]);
-            modbusADU[modbusADUSize++] = lowByte(m_transmitBuffer[0]);
-            break;
+    // CRC
+    crc = crc16(adu, aduSize);
+    adu[aduSize++] = lowByte(crc);
+    adu[aduSize++] = highByte(crc);
+
+    // Transmit
+    for (i = 0; i < aduSize; i++) {
+        m_serial.write(adu[i]);
     }
-
-    // Append CRC
-    crc = crc16(modbusADU, modbusADUSize);
-    modbusADU[modbusADUSize++] = lowByte(crc);
-    modbusADU[modbusADUSize++] = highByte(crc);
-    modbusADU[modbusADUSize++] = 0;
-
-    // Transmit request
-    for (i = 0; i < modbusADUSize; i++) {
-        m_serial.write(modbusADU[i]);
-    }
-
-    modbusADUSize = 0;
     m_serial.flush();
 
-    // loop until we run out of time or bytes, or an error occurs
+    // Receive
+    aduSize   = 0;
     startTime = millis();
-    while (bytesLeft && (status == OK)) {
+
+    while (bytesLeft && (status == OK) && (millis() - startTime) < m_timeoutMs) {
         if (m_serial.available()) {
-            modbusADU[modbusADUSize++] = m_serial.read();
+            adu[aduSize++] = m_serial.read();
             bytesLeft--;
+
+            // evaluate slave ID, function code once enough bytes have been read
+            if (aduSize == 5) {
+                // verify response is for correct Modbus slave
+                if (adu[0] != m_slaveId) {
+                    status = BAD_RESPONSE;
+                    break;
+                }
+
+                // verify response is for correct Modbus function code (mask exception bit 7)
+                if ((adu[1] & 0x7F) != static_cast<uint8_t>(func)) {
+                    status = BAD_RESPONSE;
+                    break;
+                }
+
+                // check whether Modbus exception occurred; return Modbus Exception Code
+                if (bitRead(adu[1], 7)) {
+                    status = EXCEPTION;
+                    // TODO: maybe return exception code?? adu[2]
+                    break;
+                }
+
+                // evaluate returned Modbus function code
+                switch (adu[1]) {
+                    case ReadHoldingRegisters:
+                        bytesLeft = adu[2];  // byte count
+                        break;
+
+                    case WriteSingleRegister:
+                        bytesLeft = 3;       // addrHi, addrLo, valHi, valLo -> 4 bytes,
+                                             // but we already have func+id+first byte
+                        break;
+                }
+            }
+        }
         /*
-        } else if (m_idle) {
+        else if (m_idle) {
             idle();
+        }
         */
-        }
+    }
 
-        // evaluate slave ID, function code once enough bytes have been read
-        if (modbusADUSize == 5) {
-            // verify response is for correct Modbus slave
-            if (modbusADU[0] != m_slaveId) {
-                status = BAD_RESPONSE;
-                break;
-            }
-
-            // verify response is for correct Modbus function code (mask exception bit 7)
-            if ((modbusADU[1] & 0x7F) != func) {
-                status = BAD_RESPONSE;
-                break;
-            }
-
-            // check whether Modbus exception occurred; return Modbus Exception Code
-            if (bitRead(modbusADU[1], 7)) {
-                status = EXCEPTION;
-                // TODO: maybe return exception code?? modbusADU[2]
-                break;
-            }
-
-            // evaluate returned Modbus function code
-            switch(modbusADU[1]) {
-                case ReadHoldingRegisters:
-                    bytesLeft = modbusADU[2];
-                    break;
-
-                case WriteSingleRegister:
-                    bytesLeft = 3;
-                    break;
-            }
-        }
-
-        if (millis() > (startTime + m_timeoutMs)) {
-            status = TIMEOUT;
-        }
+    if (status == OK && bytesLeft) {
+        status = TIMEOUT;
     }
 
     // verify response is large enough to inspect further
-    if ((status == OK) && modbusADUSize >= 5)
-    {
+    if ((status == OK) && aduSize >= 5) {
         // calculate CRC
-        crc = crc16(modbusADU, modbusADUSize - 2);
+        crc = crc16(adu, aduSize - 2);
 
         // verify CRC
-        if (lowByte(crc) != modbusADU[modbusADUSize - 2] || highByte(crc) != modbusADU[modbusADUSize - 1]) {
+        if (lowByte(crc) != adu[aduSize - 2] ||
+            highByte(crc) != adu[aduSize - 1]) {
             status = CRC_ERROR;
         }
     }
 
     // disassemble ADU into words
-    if (status == OK)
-    {
-        // evaluate returned Modbus function code
-        switch(modbusADU[1]) {
-            case ReadHoldingRegisters:
-                // load bytes into word; response bytes are ordered H, L, H, L, ...
-                for (i = 0; i < (modbusADU[2] >> 1); i++) {
-                    if (i < m_maxBufferSize) {
-                        m_responseBuffer[i] = word(modbusADU[2 * i + 3], modbusADU[2 * i + 4]);
-                    }
+    if (status == OK) {
+        switch (adu[1]) {
+            case ReadHoldingRegisters: {
+                uint8_t  byteCount         = adu[2];
+                uint16_t expectedByteCount = m_readQty * 2;
+                if (byteCount != expectedByteCount) {
+                    status = BAD_RESPONSE; // length mismatch
+                    break;
+                }
 
-                    m_responseBufferLength = i;
+                uint8_t numRegs = byteCount / 2;
+                uint8_t maxRegs = (numRegs <= m_maxBufferSize) ? numRegs : m_maxBufferSize;
+
+                // load bytes into word; response bytes are ordered H, L, H, L, ...
+                for (i = 0; i < maxRegs; i++) {
+                    m_responseBuffer[i] = word(adu[2 * i + 3], adu[2 * i + 4]);
                 }
                 break;
+            }
+
+            case WriteSingleRegister: {
+                if (aduSize != 8) {
+                    status = BAD_RESPONSE;
+                    break;
+                }
+
+                uint16_t addr  = word(adu[2], adu[3]);
+                uint16_t value = word(adu[4], adu[5]);
+
+                if (addr != m_writeAddress || value != m_transmitBuffer[0]) {
+                    status = BAD_RESPONSE;
+                }
+                break;
+            }
         }
     }
 
-//  m_transmitBufferIndex = 0;
-//  m_transmitBufferLength = 0;
-    m_responseBufferIndex = 0;
     return status;
 }
 

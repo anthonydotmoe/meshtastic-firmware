@@ -1,4 +1,5 @@
 #include "RenogyChargeController.h"
+#include "DebugConfiguration.h"
 
 RenogyStatus g_renogyStatus;
 
@@ -77,13 +78,19 @@ bool RenogyChargeController::poll()
         break;
     }
 
+    // Don't read from the response buffer if not OK
+    if (err != ModbusRtuMaster::Error::OK) {
+        m_status.valid = false;
+        return false;
+    }
+
     for (uint8_t i = 0; i < NUM_DATA; i++) {
         data_regs[i] = m_modbus.getResponseBuffer(i);
     }
 
     // Parse data into struct
     m_status.socPercent       = static_cast<int8_t>(data_regs[0]);
-    m_status.batteryVoltageMv = data_regs[1];
+    m_status.batteryVoltageMv = data_regs[1] * 100;
     m_status.pvPresent        = data_regs[7] != 0 ? true : false;
     m_status.loadOn           = (data_regs[32] & 0x8000) != 0 ? true : false;
     m_status.charging         = isCharging(data_regs[32]);
