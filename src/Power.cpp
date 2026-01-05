@@ -19,7 +19,6 @@
 #include "main.h"
 #include "meshUtils.h"
 #include "sleep.h"
-#include "RenogyChargeController.h"
 
 #if defined(ARCH_PORTDUINO)
 #include "api/WiFiServerAPI.h"
@@ -591,48 +590,6 @@ class AnalogBatteryLevel : public HasBatteryLevel
 
 static AnalogBatteryLevel analogLevel;
 
-extern RenogyChargeController *g_renogy; // from SerialModule.cpp
-
-class RenogyBatteryLevel : public HasBatteryLevel
-{
-public:
-    int getBatteryPercent() override {
-        if (!g_renogy) return -1;
-        auto s = g_renogy->getStatusSnapshot();
-        return s.valid ? s.socPercent : -1;
-    }
-
-    uint16_t getBattVoltage() override {
-        if (!g_renogy) return 0;
-        auto s = g_renogy->getStatusSnapshot();
-        return s.valid ? s.batteryVoltageMv : 0;
-    }
-
-    bool isBatteryConnect() override {
-        return true;
-    }
-
-    bool isVbusIn() override {
-        return false;
-        /* Uncomment when Meshtastic allows sending charge status separate from battery percentage
-        if (!g_renogy) return false;
-        auto s = g_renogy->getStatusSnapshot();
-        return s.pvPresent;
-        */
-    }
-
-    bool isCharging() override {
-        return false;
-        /* Uncomment when Meshtastic allows sending charge status separate from battery percentage
-        if (!g_renogy) return false;
-        auto s = g_renogy->getStatusSnapshot();
-        return s.charging;
-        */
-    }
-};
-
-static RenogyBatteryLevel renogyLevel;
-
 Power::Power() : OSThread("Power")
 {
     statusHandler = {};
@@ -738,12 +695,6 @@ bool Power::setup()
     } else if (meshSolarInit()) {
         found = true;
     } else if (analogInit()) {
-        found = true;
-    }
-
-    //TODO: The condition doesn't work because `moduleConfig.serial.mode` isn't initialized at this point.
-    if (true /* moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_RENOGY_WND */) {
-        batteryLevel = &renogyLevel;
         found = true;
     }
 
@@ -889,9 +840,6 @@ void Power::readPowerStatus()
 // (which shares a superclass with the BatteryLevel stuff)
 // that just provides a few methods.  But in the interest of fixing this bug I'm going to follow current
 // practice.
-
-// TODO: This section makes Renogy power reporting not work when RAK4631 is
-// plugged in via USB
 #ifdef NRF_APM // Section of code detects USB power on the RAK4631 and updates the power states.  Takes 20 seconds or so to detect
                // changes.
 

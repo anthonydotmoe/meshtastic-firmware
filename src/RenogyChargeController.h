@@ -5,7 +5,12 @@
 
 struct RenogyStatus {
     uint32_t lastUpdateMs = 0;
-    uint16_t batteryVoltageMv = 0;
+    uint16_t batteryVoltage_mV = 0;
+    uint16_t batteryCharge_mA = 0;
+    uint16_t loadVoltage_mV = 0;
+    uint16_t loadCurrent_mA = 0;
+    uint16_t panelVoltage_mV = 0;
+    uint16_t panelCurrent_mA = 0;
     int8_t   socPercent = -1;
     bool     pvPresent  = false;
     bool     loadOn     = false;
@@ -24,7 +29,7 @@ public:
     // Control load output
     bool setLoad(bool on);
 
-    // Accessors for other subsystems (Power.cpp, command replies)
+    // Accessors for other subsystems
     bool hasValidStatus() const { return m_status.valid; }
     RenogyStatus getStatusSnapshot() const { return m_status; }
 

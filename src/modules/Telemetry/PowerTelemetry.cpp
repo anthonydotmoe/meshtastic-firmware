@@ -15,6 +15,9 @@
 #include "power.h"
 #include "sleep.h"
 #include "target_specific.h"
+#include "RenogyChargeController.h"
+
+extern RenogyChargeController *g_renogy;
 
 #define FAILED_STATE_SENSOR_READ_MULTIPLIER 10
 #define DISPLAY_RECEIVEID_MEASUREMENTS_ON_SCREEN true
@@ -196,8 +199,8 @@ bool PowerTelemetryModule::getPowerTelemetry(meshtastic_Telemetry *m)
     bool valid = false;
     m->time = getTime();
     m->which_variant = meshtastic_Telemetry_power_metrics_tag;
-
     m->variant.power_metrics = meshtastic_PowerMetrics_init_zero;
+
 #if HAS_TELEMETRY
     if (ina219Sensor.hasSensor())
         valid = ina219Sensor.getMetrics(m);
@@ -210,6 +213,26 @@ bool PowerTelemetryModule::getPowerTelemetry(meshtastic_Telemetry *m)
     if (max17048Sensor.hasSensor())
         valid = max17048Sensor.getMetrics(m);
 #endif
+
+    if (g_renogy) {
+        auto s = g_renogy->getStatusSnapshot();
+        if (s.valid) {
+            m->variant.power_metrics.has_ch1_voltage = true;
+            m->variant.power_metrics.has_ch1_current = true;
+            m->variant.power_metrics.has_ch2_voltage = true;
+            m->variant.power_metrics.has_ch2_current = true;
+            m->variant.power_metrics.has_ch3_voltage = true;
+            m->variant.power_metrics.has_ch3_current = true;
+            m->variant.power_metrics.ch1_voltage = s.batteryVoltage_mV / 1000.0f;
+            m->variant.power_metrics.ch1_current = s.batteryCharge_mA  / 1000.0f;
+            m->variant.power_metrics.ch2_voltage = s.loadVoltage_mV / 1000.0f;
+            m->variant.power_metrics.ch2_current = s.loadCurrent_mA  / 1000.0f;
+            m->variant.power_metrics.ch3_voltage = s.panelVoltage_mV / 1000.0f;
+            m->variant.power_metrics.ch3_current = s.panelCurrent_mA  / 1000.0f;
+
+            valid = true;
+        }
+    }
 
     return valid;
 }

@@ -89,13 +89,18 @@ bool RenogyChargeController::poll()
     }
 
     // Parse data into struct
-    m_status.socPercent       = static_cast<int8_t>(data_regs[0]);
-    m_status.batteryVoltageMv = data_regs[1] * 100;
-    m_status.pvPresent        = data_regs[7] != 0 ? true : false;
-    m_status.loadOn           = (data_regs[32] & 0x8000) != 0 ? true : false;
-    m_status.charging         = isCharging(data_regs[32]);
-    m_status.lastUpdateMs     = millis();
-    m_status.valid            = true;
+    m_status.socPercent        = static_cast<int8_t>(data_regs[0]);
+    m_status.batteryVoltage_mV = data_regs[1] * 100;
+    m_status.batteryCharge_mA  = data_regs[2] * 10;
+    m_status.loadVoltage_mV    = data_regs[4] * 100;
+    m_status.loadCurrent_mA    = data_regs[5] * 10;
+    m_status.panelVoltage_mV   = data_regs[7] * 100;
+    m_status.panelCurrent_mA   = data_regs[8] * 10;
+    m_status.pvPresent         = data_regs[7] != 0 ? true : false;
+    m_status.loadOn            = (data_regs[32] & 0x8000) != 0 ? true : false;
+    m_status.charging          = isCharging(data_regs[32]);
+    m_status.lastUpdateMs      = millis();
+    m_status.valid             = true;
 
     return true;
 }
