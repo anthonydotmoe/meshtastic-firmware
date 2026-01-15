@@ -80,6 +80,11 @@ int32_t PowerTelemetryModule::runOnce()
                 result = max17048Sensor.isInitialized() ? 0 : max17048Sensor.runOnce();
         }
 
+        // Keep module alive if g_renogy
+        if (g_renogy) {
+            result = 0;
+        }
+
         // it's possible to have this module enabled, only for displaying values on the screen.
         // therefore, we should only enable the sensor loop if measurement is also enabled
         return result == UINT32_MAX ? disable() : setStartDelay();
@@ -224,11 +229,11 @@ bool PowerTelemetryModule::getPowerTelemetry(meshtastic_Telemetry *m)
             m->variant.power_metrics.has_ch3_voltage = true;
             m->variant.power_metrics.has_ch3_current = true;
             m->variant.power_metrics.ch1_voltage = s.batteryVoltage_mV / 1000.0f;
-            m->variant.power_metrics.ch1_current = s.batteryCharge_mA  / 1000.0f;
+            m->variant.power_metrics.ch1_current = s.batteryCharge_mA;
             m->variant.power_metrics.ch2_voltage = s.loadVoltage_mV / 1000.0f;
-            m->variant.power_metrics.ch2_current = s.loadCurrent_mA  / 1000.0f;
+            m->variant.power_metrics.ch2_current = s.loadCurrent_mA;
             m->variant.power_metrics.ch3_voltage = s.panelVoltage_mV / 1000.0f;
-            m->variant.power_metrics.ch3_current = s.panelCurrent_mA  / 1000.0f;
+            m->variant.power_metrics.ch3_current = s.panelCurrent_mA;
 
             valid = true;
         }
