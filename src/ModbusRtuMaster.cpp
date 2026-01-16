@@ -1,4 +1,5 @@
 #include "ModbusRtuMaster.h"
+#include "DebugConfiguration.h"
 
 #define lowWord(ww) ((uint16_t) ((ww) & 0xFFFF))
 #define highWord(ww) ((uint16_t) ((ww) >> 16))
@@ -91,6 +92,24 @@ ModbusRtuMaster::Error ModbusRtuMaster::transact(ModbusFunction func)
     adu[aduSize++] = lowByte(crc);
     adu[aduSize++] = highByte(crc);
 
+    LOG_DEBUG("Modbus TX (func 0x%02X, len %u):", (uint8_t)func, aduSize);
+
+    char hexbuf[256];
+    char *w = hexbuf;
+
+    for (uint8_t j = 0; j < aduSize; j++) {
+        // Write "HH " into hexbuf
+        int n = snprintf(w, sizeof(hexbuf) - (w - hexbuf), "%02X ", adu[j]);
+        if (n <= 0) break;
+        w += n;
+    }
+
+    // Null terminate
+    *w = '\0';
+
+    // Emit entire hex string
+    LOG_DEBUG("%s", hexbuf);
+
     // Transmit
     for (i = 0; i < aduSize; i++) {
         m_serial.write(adu[i]);
@@ -153,6 +172,21 @@ ModbusRtuMaster::Error ModbusRtuMaster::transact(ModbusFunction func)
 
     // verify response is large enough to inspect further
     if ((status == OK) && aduSize >= 5) {
+        // Log the received bytes
+        if (aduSize > 0) {
+            char rxbuf[256];
+            char *w = rxbuf;
+
+            for (uint8_t j = 0; j < aduSize; j++) {
+                int n = snprintf(w, sizeof(rxbuf) - (w - rxbuf), "%02X ", adu[j]);
+                if (n <= 0) break;
+                w += n;
+            }
+            *w = '\0';
+
+            LOG_DEBUG("Modbus RX (len %u): %s", aduSize, rxbuf);
+        }
+
         // calculate CRC
         crc = crc16(adu, aduSize - 2);
 
