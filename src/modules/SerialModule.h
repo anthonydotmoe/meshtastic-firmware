@@ -54,6 +54,11 @@ class SerialModuleRadio : public MeshModule
      */
     void sendPayload(NodeNum dest = NODENUM_BROADCAST, bool wantReplies = false);
 
+    /**
+     * Convenience API to send a text reply
+     */
+    void sendText(NodeNum dest, const char *text);
+
   protected:
     virtual meshtastic_MeshPacket *allocReply() override;
 

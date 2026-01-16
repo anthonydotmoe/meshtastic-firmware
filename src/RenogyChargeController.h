@@ -32,6 +32,7 @@ public:
     // Accessors for other subsystems
     bool hasValidStatus() const { return m_status.valid; }
     RenogyStatus getStatusSnapshot() const { return m_status; }
+    ModbusRtuMaster& modbus() { return m_modbus; }
 
 private:
     ModbusRtuMaster m_modbus;

@@ -102,6 +102,15 @@ bool RenogyChargeController::poll()
     m_status.lastUpdateMs      = millis();
     m_status.valid             = true;
 
+    /*
+    LOG_INFO("Batt Voltage mV: %d", m_status.batteryVoltage_mV);
+    LOG_INFO("Batt Current mA: %d", m_status.batteryCharge_mA);
+    LOG_INFO("Load Voltage mV: %d", m_status.loadVoltage_mV);
+    LOG_INFO("Load Current mA: %d", m_status.loadCurrent_mA);
+    LOG_INFO("Panl Voltage mV: %d", m_status.panelVoltage_mV);
+    LOG_INFO("Panl Current mA: %d", m_status.panelCurrent_mA);
+    */
+
     return true;
 }
 

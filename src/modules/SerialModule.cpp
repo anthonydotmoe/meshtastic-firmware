@@ -12,6 +12,22 @@
 #include "RenogyChargeController.h"
 RenogyChargeController *g_renogy = nullptr;
 
+struct RenogyCommand {
+    enum class Type : uint8_t {
+        ReadHolding,
+        WriteSingle,
+        //SetLoad,
+    } type;
+
+    uint16_t addr;          // start or reg addr
+    uint16_t countOrValue;  // num registers for read, value for write
+    NodeNum  requestor;     // who to reply to
+};
+
+// Static-slot command queue between radio and serial threads
+static volatile bool s_renogyCmdPending = false;
+static RenogyCommand s_renogyCmd;
+
 /*
     SerialModule
         A simple interface to send messages over the mesh network by sending strings
@@ -378,6 +394,35 @@ void SerialModuleRadio::sendPayload(NodeNum dest, bool wantReplies)
     service->sendToMesh(p);
 }
 
+void SerialModuleRadio::sendText(NodeNum dest, const char *text)
+{
+    if (!text) return;
+
+    const meshtastic_Channel *ch = (boundChannel != NULL)
+        ? &channels.getByName(boundChannel)
+        : NULL;
+    
+    meshtastic_MeshPacket *p = allocReply();
+    if (!p) return;
+
+    p->to = dest;
+    if (ch != NULL) {
+        p->channel = ch->index;
+    }
+
+    p->decoded.want_response = false;
+    p->want_ack              = ACK;
+
+    size_t len = strnlen(text, meshtastic_Constants_DATA_PAYLOAD_LEN);
+    if (len > meshtastic_Constants_DATA_PAYLOAD_LEN)
+        len = meshtastic_Constants_DATA_PAYLOAD_LEN;
+    
+    memcpy(p->decoded.payload.bytes, text, len);
+    p->decoded.payload.size = len;
+
+    service->sendToMesh(p);
+}
+
 /**
  * Handle a received mesh packet.
  *
@@ -440,6 +485,38 @@ ProcessMessage SerialModuleRadio::handleReceived(const meshtastic_MeshPacket &mp
                              moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_CALTOPO);
                     serialPrint->printf("%s", outbuf);
                 }
+            } else if (moduleConfig.serial.mode == (meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9) {
+                const auto &p = mp.decoded;
+
+                // TODO: Determine how to only act on:
+                // 1. Direct Messages
+                // 2. Received from nodes in the favorites list
+
+                RenogyCommand cmd;
+                if (parseRenogyCommandText(p.payload.bytes, p.payload.size, cmd)) {
+                    cmd.requestor = getFrom(&mp);
+
+                    // only accept a new command if none pending
+                    if (s_renogyCmdPending) {
+                        s_renogyCmd = cmd;
+                        // Ensure struct is written before flag becomes true
+                        __asm__ __volatile__ ("" ::: "memory"); // TODO: Hack for a memory barrier
+                        s_renogyCmdPending = true;
+                    } else {
+                        // Send "busy" reply
+                        if (serialModuleRadio) {
+                            serialModuleRadio->sendText(cmd.requestor, "ERR BUSY");
+                        }
+                    }
+                } else {
+                    if (serialModuleRadio) {
+                        NodeNum from = getFrom(&mp);
+                        serialModuleRadio->sendText(from, "ERR BAD_CMD");
+                    }
+                }
+
+                // We consumed this packet as a command
+                return ProcessMessage::STOP;
             }
         }
     }
@@ -544,11 +621,132 @@ ParsedLine parseLine(const char *line)
     return result;
 }
 
+static bool parseUint16(const char *token, uint16_t &out)
+{
+    if (!token || !*token) return false;
+
+    char *end = nullptr;
+    // Auto-detect base: "0x" -> hex, else decimal
+    long v = strtol(token, &end, 0);
+    if (end == token || v < 0 || v > 0xFFFF) return false;
+
+    out = static_cast<uint16_t>(v);
+    return true;
+}
+
+static bool parseRenogyCommandText(const uint8_t *data, size_t len, RenogyCommand &out)
+{
+    // Copy into a null terminated buffer
+    char buf[64];
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    memcpy(buf, data, len);
+    buf[len] = '\0';
+
+    // Tokenize by spaces
+    char *saveptr = nullptr;
+    char *cmd = strtok_r(buf, " \t\r\n", &saveptr);
+    if (!cmd) return false;
+
+    // Uppercase the command token
+    for (char *p = cmd; *p; ++p) *p = toupper(*p);
+
+    if (strcmp(cmd, "RH") == 0 || strcmp(cmd, "READ") == 0) {
+        char *addrTok = strtok_r(nullptr, " \t\r\n", &saveptr);
+        char *countTok = strtok_r(nullptr, " \t\r\n", &saveptr);
+
+        uint16_t addr, count;
+        if (!parseUint16(addrTok, addr) || !parseUint16(countTok, count)) {
+            return false;
+        }
+
+        out.type         = RenogyCommand::Type::ReadHolding;
+        out.addr         = addr;
+        out.countOrValue = count;
+        return true;
+    } else if (strcmp(cmd, "WH") == 0 || strcmp(cmd, "WRITE") == 0) {
+        char *addrTok = strtok_r(nullptr, " \t\r\n", &saveptr);
+        char *valTok  = strtok_r(nullptr, " \t\r\n", &saveptr);
+
+        uint16_t addr, value;
+        if (!parseUint16(addrTok, addr) || !parseUint16(valTok, value)) {
+            return false;
+        }
+
+        out.type         = RenogyCommand::Type::WriteSingle;
+        out.addr         = addr;
+        out.countOrValue = value;
+    }
+
+    return false;
+}
+
 void SerialModule::processRenogySerial()
 {
     static uint32_t lastPollMs = 0;
     const uint32_t pollIntervalMs = 10000; //TODO: 5 seconds for testing
 
+    // 1. Execute any queued command
+    if (s_renogyCmdPending && g_renogy) {
+        // copy & clear pending flag as early as possible
+        RenogyCommand cmd = s_renogyCmd;
+        s_renogyCmdPending = false;
+
+        char reply[128] = {0};
+
+        ModbusRtuMaster &mb = g_renogy->modbus();
+        ModbusRtuMaster::Error err = ModbusRtuMaster::OK;
+
+        switch (cmd.type) {
+        case RenogyCommand::Type::ReadHolding: {
+            uint16_t addr  = cmd.addr;
+            uint16_t count = cmd.countOrValue;
+
+            err = mb.readHoldingRegisters(addr, count);
+            if (err == ModbusRtuMaster::OK) {
+                // Build response line
+                size_t pos = snprintf(reply, sizeof(reply),
+                    "OK RH 0x%04X %u:", addr, count);
+                
+                uint16_t maxRegs = count;
+                if (maxRegs > 64 /* ModbusRtuMaster::m_maxBufferSize */) {
+                    maxRegs = 64;
+                }
+
+                for (uint16_t i = 0; i < maxRegs && pos < sizeof(reply); ++i) {
+                    uint16_t v = mb.getResponseBuffer(i);
+                    pos += snprintf(reply + pos, sizeof(reply) - pos,
+                    " 0x%04X", v);
+                }
+            }
+            break;
+        }
+
+        case RenogyCommand::Type::WriteSingle: {
+            uint16_t addr  = cmd.addr;
+            uint16_t value = cmd.countOrValue;
+
+            err = mb.writeSingleRegister(addr, value);
+            if (err == ModbusRtuMaster::OK) {
+                snprintf(reply, sizeof(reply),
+                    "OK WH 0x%04X 0x%04X", addr, value);
+            }
+            break;
+        }
+
+        // case RenogyCommand::Type::SetLoad: {
+        //     break;
+        // }
+        }
+
+        if (err != ModbusRtuMaster::OK && reply[0] == '\0') {
+            snprintf(reply, sizeof(reply), "ERR %d", static_cast<int>(err));
+        }
+
+        if (serialModuleRadio && reply[0] != '\0') {
+            serialModuleRadio->sendText(cmd.requestor, reply);
+        }
+    }
+    // 2. Normal polling behavior
     if (!Throttle::isWithinTimespanMs(lastPollMs, pollIntervalMs) || lastPollMs == 0) {
         lastPollMs = millis();
         if (g_renogy) {
