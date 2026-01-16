@@ -11,6 +11,7 @@
 
 #include "RenogyChargeController.h"
 RenogyChargeController *g_renogy = nullptr;
+static constexpr uint8_t RENOGY_SLAVEID = 0xFF;
 
 struct RenogyCommand {
     enum class Type : uint8_t {
@@ -23,6 +24,8 @@ struct RenogyCommand {
     uint16_t countOrValue;  // num registers for read, value for write
     NodeNum  requestor;     // who to reply to
 };
+
+static bool parseRenogyCommandText(const uint8_t *data, size_t len, RenogyCommand &out);
 
 // Static-slot command queue between radio and serial threads
 static volatile bool s_renogyCmdPending = false;
@@ -132,6 +135,7 @@ SerialModuleRadio::SerialModuleRadio() : MeshModule("SerialModuleRadio")
 {
     switch (moduleConfig.serial.mode) {
     case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_TEXTMSG:
+    case (meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9:
         ourPortNum = meshtastic_PortNum_TEXT_MESSAGE_APP;
         break;
     case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_NMEA:
@@ -251,11 +255,11 @@ int32_t SerialModule::runOnce()
 
             if (moduleConfig.serial.mode == (_meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9) {
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
-                g_renogy = new RenogyChargeController(Serial1, 255);
+                g_renogy = new RenogyChargeController(Serial1, RENOGY_SLAVEID);
 #elif defined(ARCH_ESP32)
-                g_renogy = new RenogyChargeController(Serial2, 255);
+                g_renogy = new RenogyChargeController(Serial2, RENOGY_SLAVEID);
 #else
-                g_renogy = new RenogyChargeController(Serial2, 255);
+                g_renogy = new RenogyChargeController(Serial2, RENOGY_SLAVEID);
 #endif
             }
 
@@ -488,16 +492,21 @@ ProcessMessage SerialModuleRadio::handleReceived(const meshtastic_MeshPacket &mp
             } else if (moduleConfig.serial.mode == (meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9) {
                 const auto &p = mp.decoded;
 
-                // TODO: Determine how to only act on:
-                // 1. Direct Messages
-                // 2. Received from nodes in the favorites list
+                LOG_DEBUG("Received text msg self=0x%0x, from=0x%0x, to=0x%0x, id=%d, msg=%.*s",
+                    nodeDB->getNodeNum(), mp.from, mp.to, mp.id, p.payload.size, p.payload.bytes);
+
+                NodeNum from = getFrom(&mp);
+                if (!nodeDB->isFavorite(from)) {
+                    // Not from a favorite node, just ignore it
+                    return ProcessMessage::CONTINUE;
+                }
 
                 RenogyCommand cmd;
                 if (parseRenogyCommandText(p.payload.bytes, p.payload.size, cmd)) {
                     cmd.requestor = getFrom(&mp);
 
                     // only accept a new command if none pending
-                    if (s_renogyCmdPending) {
+                    if (!s_renogyCmdPending) {
                         s_renogyCmd = cmd;
                         // Ensure struct is written before flag becomes true
                         __asm__ __volatile__ ("" ::: "memory"); // TODO: Hack for a memory barrier
@@ -675,6 +684,7 @@ static bool parseRenogyCommandText(const uint8_t *data, size_t len, RenogyComman
         out.type         = RenogyCommand::Type::WriteSingle;
         out.addr         = addr;
         out.countOrValue = value;
+        return true;
     }
 
     return false;
