@@ -495,6 +495,11 @@ ProcessMessage SerialModuleRadio::handleReceived(const meshtastic_MeshPacket &mp
                 LOG_DEBUG("Received text msg self=0x%0x, from=0x%0x, to=0x%0x, id=%d, msg=%.*s",
                     nodeDB->getNodeNum(), mp.from, mp.to, mp.id, p.payload.size, p.payload.bytes);
 
+                // Renogy commands must arrive as direct messages to this node.
+                if (!isToUs(&mp)) {
+                    return ProcessMessage::CONTINUE;
+                }
+
                 NodeNum from = getFrom(&mp);
                 if (!nodeDB->isFavorite(from)) {
                     // Not from a favorite node, just ignore it
