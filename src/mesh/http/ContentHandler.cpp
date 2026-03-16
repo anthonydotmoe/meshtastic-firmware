@@ -49,6 +49,7 @@ using namespace httpsserver;
 
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <vector>
 HTTPClient httpClient;
 
 #define DEST_FS_USES_LITTLEFS
@@ -67,6 +68,29 @@ char const *contentTypes[][2] = {{".txt", "text/plain"},     {".html", "text/htm
 // Our API to handle messages to and from the radio.
 HttpAPI webAPI;
 
+namespace
+{
+bool getLocaleFallbackPath(const std::string &path, std::string &fallbackPath)
+{
+    static const std::string prefix = "/static/i18n/locales/";
+    if (path.compare(0, prefix.size(), prefix) != 0)
+        return false;
+
+    size_t localeStart = prefix.size();
+    size_t localeEnd = path.find('/', localeStart);
+    if (localeEnd == std::string::npos)
+        return false;
+
+    std::string locale = path.substr(localeStart, localeEnd - localeStart);
+    size_t dash = locale.find('-');
+    if (dash == std::string::npos)
+        return false;
+
+    fallbackPath = prefix + locale.substr(0, dash) + path.substr(localeEnd);
+    return true;
+}
+} // namespace
+
 void registerHandlers(HTTPServer *insecureServer, HTTPSServer *secureServer)
 {
 
@@ -77,6 +101,11 @@ void registerHandlers(HTTPServer *insecureServer, HTTPSServer *secureServer)
     ResourceNode *nodeAPIv1ToRadio = new ResourceNode("/api/v1/toradio", "PUT", &handleAPIv1ToRadio);
     ResourceNode *nodeAPIv1FromRadioOptions = new ResourceNode("/api/v1/fromradio", "OPTIONS", &handleAPIv1FromRadio);
     ResourceNode *nodeAPIv1FromRadio = new ResourceNode("/api/v1/fromradio", "GET", &handleAPIv1FromRadio);
+    ResourceNode *nodeAPIv1ToRadioWildcardOptions = new ResourceNode("/api/v1/toradio/*", "OPTIONS", &handleAPIv1ToRadio);
+    ResourceNode *nodeAPIv1ToRadioWildcard = new ResourceNode("/api/v1/toradio/*", "PUT", &handleAPIv1ToRadio);
+    ResourceNode *nodeAPIv1FromRadioWildcardOptions =
+        new ResourceNode("/api/v1/fromradio/*", "OPTIONS", &handleAPIv1FromRadio);
+    ResourceNode *nodeAPIv1FromRadioWildcard = new ResourceNode("/api/v1/fromradio/*", "GET", &handleAPIv1FromRadio);
 
     //    ResourceNode *nodeHotspotApple = new ResourceNode("/hotspot-detect.html", "GET", &handleHotspot);
     //    ResourceNode *nodeHotspotAndroid = new ResourceNode("/generate_204", "GET", &handleHotspot);
@@ -98,13 +127,23 @@ void registerHandlers(HTTPServer *insecureServer, HTTPSServer *secureServer)
     ResourceNode *nodeJsonFsBrowseStatic = new ResourceNode("/json/fs/browse/static", "GET", &handleFsBrowseStatic);
     ResourceNode *nodeJsonDelete = new ResourceNode("/json/fs/delete/static", "DELETE", &handleFsDeleteStatic);
 
-    ResourceNode *nodeRoot = new ResourceNode("/*", "GET", &handleStatic);
+    std::vector<ResourceNode *> staticNodes = {
+        new ResourceNode("/*", "GET", &handleStatic),
+        new ResourceNode("/*/*", "GET", &handleStatic),
+        new ResourceNode("/*/*/*", "GET", &handleStatic),
+        new ResourceNode("/*/*/*/*", "GET", &handleStatic),
+        new ResourceNode("/*/*/*/*/*", "GET", &handleStatic),
+    };
 
     // Secure nodes
     secureServer->registerNode(nodeAPIv1ToRadioOptions);
     secureServer->registerNode(nodeAPIv1ToRadio);
     secureServer->registerNode(nodeAPIv1FromRadioOptions);
     secureServer->registerNode(nodeAPIv1FromRadio);
+    secureServer->registerNode(nodeAPIv1ToRadioWildcardOptions);
+    secureServer->registerNode(nodeAPIv1ToRadioWildcard);
+    secureServer->registerNode(nodeAPIv1FromRadioWildcardOptions);
+    secureServer->registerNode(nodeAPIv1FromRadioWildcard);
     //    secureServer->registerNode(nodeHotspotApple);
     //    secureServer->registerNode(nodeHotspotAndroid);
     secureServer->registerNode(nodeRestart);
@@ -121,13 +160,19 @@ void registerHandlers(HTTPServer *insecureServer, HTTPSServer *secureServer)
     //    secureServer->registerNode(nodeAdminFs);
     //    secureServer->registerNode(nodeAdminSettings);
     //    secureServer->registerNode(nodeAdminSettingsApply);
-    secureServer->registerNode(nodeRoot); // This has to be last
+    for (auto *node : staticNodes) {
+        secureServer->registerNode(node); // These have to be last
+    }
 
     // Insecure nodes
     insecureServer->registerNode(nodeAPIv1ToRadioOptions);
     insecureServer->registerNode(nodeAPIv1ToRadio);
     insecureServer->registerNode(nodeAPIv1FromRadioOptions);
     insecureServer->registerNode(nodeAPIv1FromRadio);
+    insecureServer->registerNode(nodeAPIv1ToRadioWildcardOptions);
+    insecureServer->registerNode(nodeAPIv1ToRadioWildcard);
+    insecureServer->registerNode(nodeAPIv1FromRadioWildcardOptions);
+    insecureServer->registerNode(nodeAPIv1FromRadioWildcard);
     //    insecureServer->registerNode(nodeHotspotApple);
     //    insecureServer->registerNode(nodeHotspotAndroid);
     insecureServer->registerNode(nodeRestart);
@@ -143,7 +188,9 @@ void registerHandlers(HTTPServer *insecureServer, HTTPSServer *secureServer)
     //    insecureServer->registerNode(nodeAdminFs);
     //    insecureServer->registerNode(nodeAdminSettings);
     //    insecureServer->registerNode(nodeAdminSettingsApply);
-    insecureServer->registerNode(nodeRoot); // This has to be last
+    for (auto *node : staticNodes) {
+        insecureServer->registerNode(node); // These have to be last
+    }
 }
 
 void handleAPIv1FromRadio(HTTPRequest *req, HTTPResponse *res)
@@ -400,8 +447,18 @@ void handleStatic(HTTPRequest *req, HTTPResponse *res)
     ResourceParameters *params = req->getParams();
 
     std::string parameter1;
-    // Print the first parameter value
-    if (params->getPathParameter(0, parameter1)) {
+    for (size_t i = 0;; ++i) {
+        std::string pathPart;
+        if (!params->getPathParameter(i, pathPart)) {
+            break;
+        }
+        if (i > 0 && !pathPart.empty()) {
+            parameter1 += "/";
+        }
+        parameter1 += pathPart;
+    }
+
+    if (!parameter1.empty() || req->getRequestString() == "/") {
 
         std::string filename = "/static/" + parameter1;
         std::string filenameGzip = "/static/" + parameter1 + ".gz";
@@ -418,18 +475,37 @@ void handleStatic(HTTPRequest *req, HTTPResponse *res)
 
         concurrency::LockGuard g(spiLock);
 
-        if (FSCom.exists(filename.c_str())) {
-            file = FSCom.open(filename.c_str());
-            if (!file.available()) {
-                LOG_WARN("File not available - %s", filename.c_str());
+        auto tryOpen = [&](const std::string &baseFilename) {
+            std::string gzipFilename = baseFilename + ".gz";
+            if (FSCom.exists(gzipFilename.c_str())) {
+                file = FSCom.open(gzipFilename.c_str());
+                res->setHeader("Content-Encoding", "gzip");
+                if (!file.available()) {
+                    LOG_WARN("File not available - %s", gzipFilename.c_str());
+                } else {
+                    filename = baseFilename;
+                    filenameGzip = gzipFilename;
+                    return true;
+                }
             }
-        } else if (FSCom.exists(filenameGzip.c_str())) {
-            file = FSCom.open(filenameGzip.c_str());
-            res->setHeader("Content-Encoding", "gzip");
-            if (!file.available()) {
-                LOG_WARN("File not available - %s", filenameGzip.c_str());
+
+            if (FSCom.exists(baseFilename.c_str())) {
+                file = FSCom.open(baseFilename.c_str());
+                if (!file.available()) {
+                    LOG_WARN("File not available - %s", baseFilename.c_str());
+                } else {
+                    filename = baseFilename;
+                    filenameGzip = gzipFilename;
+                    return true;
+                }
             }
-        } else {
+
+            return false;
+        };
+
+        if (!tryOpen(filename)) {
+            std::string fallbackFilename;
+            if (!getLocaleFallbackPath(filename, fallbackFilename) || !tryOpen(fallbackFilename)) {
             has_set_content_type = true;
             filenameGzip = "/static/index.html.gz";
             file = FSCom.open(filenameGzip.c_str());
@@ -445,6 +521,7 @@ void handleStatic(HTTPRequest *req, HTTPResponse *res)
             } else {
                 res->setHeader("Content-Encoding", "gzip");
             }
+        }
         }
 
         res->setHeader("Content-Length", httpsserver::intToString(file.size()));
@@ -468,10 +545,9 @@ void handleStatic(HTTPRequest *req, HTTPResponse *res)
         // Read the file and write it to the HTTP response body
         size_t length = 0;
         do {
-            char buffer[256];
-            length = file.read((uint8_t *)buffer, 256);
-            std::string bufferString(buffer, length);
-            res->write((uint8_t *)bufferString.c_str(), bufferString.size());
+            uint8_t buffer[1024];
+            length = file.read(buffer, sizeof(buffer));
+            res->write(buffer, length);
         } while (length > 0);
 
         file.close();
