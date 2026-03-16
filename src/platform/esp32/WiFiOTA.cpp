@@ -62,6 +62,8 @@ const esp_partition_t *getAppPartition()
 
 bool getAppDesc(const esp_partition_t *part, esp_app_desc_t *app_desc)
 {
+    if (!part)
+        return false;
     if (esp_ota_get_partition_description(part, app_desc) != ESP_OK)
         return false;
     if (strcmp(app_desc->project_name, appProjectName) != 0)
