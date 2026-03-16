@@ -31,6 +31,19 @@
 #endif
 #include "Throttle.h"
 #include <RTC.h>
+#include <algorithm>
+
+namespace
+{
+bool shouldAdvertiseManifestFile(const meshtastic_FileInfo &fileInfo)
+{
+    const char *path = fileInfo.file_name;
+    if (strncmp(path, "/static/", 8) != 0)
+        return true;
+
+    return String(path).endsWith(".csv");
+}
+} // namespace
 
 // Flag to indicate a heartbeat was received and we should send queue status
 bool heartbeatReceived = false;
@@ -72,6 +85,11 @@ void PhoneAPI::handleStartConfig()
     spiLock->lock();
     filesManifest = getFiles("/", 10);
     spiLock->unlock();
+    filesManifest.erase(std::remove_if(filesManifest.begin(), filesManifest.end(),
+                                       [](const meshtastic_FileInfo &fileInfo) {
+                                           return !shouldAdvertiseManifestFile(fileInfo);
+                                       }),
+                        filesManifest.end());
     LOG_DEBUG("Got %d files in manifest", filesManifest.size());
 
     LOG_INFO("Start API client config millis=%u", millis());
