@@ -1,0 +1,8 @@
+# Single-app 16MB layout for WebUI-capable builds.
+# Keeps a large LittleFS partition by dropping the second OTA app slot.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x400000,
+spiffs,   data, spiffs,  0x410000,0xBE0000,
+coredump, data, coredump,0xFF0000,0x10000,
