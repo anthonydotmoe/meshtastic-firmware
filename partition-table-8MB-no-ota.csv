@@ -1,0 +1,9 @@
+# Single-app 8MB layout for WebUI proof-of-concept builds.
+# Keeps one app slot and a 0x360000 LittleFS partition, matching the
+# current measured WebUI needs with comfortable margin.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x480000,
+spiffs,   data, spiffs,  0x490000,0x360000,
+coredump, data, coredump,0x7F0000,0x10000,

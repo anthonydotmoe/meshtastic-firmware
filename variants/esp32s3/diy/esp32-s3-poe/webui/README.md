@@ -20,3 +20,8 @@ Notes:
 - To flash firmware plus LittleFS/WebUI:
   - `pio run -e esp32-s3-poe -t upload`
   - `pio run -e esp32-s3-poe -t uploadfs`
+- 8MB proof-of-concept on this 16MB board:
+  - `pio run -e esp32-s3-poe-8mb-poc`
+  - `pio run -e esp32-s3-poe-8mb-poc -t buildfs`
+  - `pio run -e esp32-s3-poe-8mb-poc -t upload`
+  - `pio run -e esp32-s3-poe-8mb-poc -t uploadfs`
