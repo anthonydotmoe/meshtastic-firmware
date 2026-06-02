@@ -38,6 +38,211 @@ bool VEDirectChargeController::poll()
     return m_updated;
 }
 
+VEDirectChargeController::HexError VEDirectChargeController::getRegister(uint16_t id, uint8_t *value, size_t maxLen,
+                                                                          size_t &valueLen, uint32_t timeoutMs,
+                                                                          uint8_t *replyFlags)
+{
+    valueLen = 0;
+    while (m_serial.available()) {
+        processByte(static_cast<uint8_t>(m_serial.read()));
+    }
+
+    const uint8_t payload[] = {
+        static_cast<uint8_t>(id & 0xFF),
+        static_cast<uint8_t>((id >> 8) & 0xFF),
+        0x00,
+    };
+
+    if (!sendHexFrame(0x7, payload, sizeof(payload))) {
+        return HexError::BAD_RESPONSE;
+    }
+
+    return readHexResponse(0x7, id, value, maxLen, valueLen, timeoutMs, replyFlags);
+}
+
+VEDirectChargeController::HexError VEDirectChargeController::setRegisterU8(uint16_t id, uint8_t value, uint32_t timeoutMs,
+                                                                            uint8_t *replyFlags)
+{
+    size_t valueLen = 0;
+    uint8_t echoedValue = 0;
+
+    while (m_serial.available()) {
+        processByte(static_cast<uint8_t>(m_serial.read()));
+    }
+
+    const uint8_t payload[] = {
+        static_cast<uint8_t>(id & 0xFF),
+        static_cast<uint8_t>((id >> 8) & 0xFF),
+        0x00,
+        value,
+    };
+
+    if (!sendHexFrame(0x8, payload, sizeof(payload))) {
+        return HexError::BAD_RESPONSE;
+    }
+
+    HexError err = readHexResponse(0x8, id, &echoedValue, sizeof(echoedValue), valueLen, timeoutMs, replyFlags);
+    if (err != HexError::OK) {
+        return err;
+    }
+
+    return (valueLen == 1 && echoedValue == value) ? HexError::OK : HexError::BAD_RESPONSE;
+}
+
+const char *VEDirectChargeController::hexErrorName(HexError err)
+{
+    switch (err) {
+    case HexError::OK:
+        return "OK";
+    case HexError::TIMEOUT:
+        return "TIMEOUT";
+    case HexError::CHECKSUM:
+        return "CHECKSUM";
+    case HexError::BAD_RESPONSE:
+        return "BAD_RESPONSE";
+    case HexError::DEVICE_ERROR:
+        return "DEVICE_ERROR";
+    case HexError::UNKNOWN_ID:
+        return "UNKNOWN_ID";
+    case HexError::NOT_SUPPORTED:
+        return "NOT_SUPPORTED";
+    case HexError::PARAMETER_ERROR:
+        return "PARAMETER_ERROR";
+    case HexError::BUFFER_TOO_SMALL:
+        return "BUFFER_TOO_SMALL";
+    }
+
+    return "UNKNOWN";
+}
+
+bool VEDirectChargeController::sendHexFrame(uint8_t command, const uint8_t *payload, size_t payloadLen)
+{
+    static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
+
+    if (command > 0x0F) {
+        return false;
+    }
+
+    uint8_t checksum = command;
+    m_serial.write(':');
+    m_serial.write(HEX_DIGITS[command]);
+
+    for (size_t i = 0; i < payloadLen; ++i) {
+        checksum = static_cast<uint8_t>(checksum + payload[i]);
+        m_serial.write(HEX_DIGITS[(payload[i] >> 4) & 0x0F]);
+        m_serial.write(HEX_DIGITS[payload[i] & 0x0F]);
+    }
+
+    checksum = static_cast<uint8_t>(0x55 - checksum);
+    m_serial.write(HEX_DIGITS[(checksum >> 4) & 0x0F]);
+    m_serial.write(HEX_DIGITS[checksum & 0x0F]);
+    m_serial.write('\n');
+    return true;
+}
+
+VEDirectChargeController::HexError VEDirectChargeController::readHexResponse(uint8_t expectedResponse, uint16_t expectedRegister,
+                                                                              uint8_t *value, size_t maxLen, size_t &valueLen,
+                                                                              uint32_t timeoutMs, uint8_t *replyFlags)
+{
+    char line[128] = {0};
+    uint8_t payload[80] = {0};
+    size_t pos = 0;
+    bool inHexLine = false;
+    const uint32_t start = millis();
+
+    valueLen = 0;
+    if (replyFlags) {
+        *replyFlags = 0;
+    }
+
+    while (millis() - start < timeoutMs) {
+        while (m_serial.available()) {
+            uint8_t c = static_cast<uint8_t>(m_serial.read());
+
+            if (!inHexLine) {
+                if (c == ':') {
+                    inHexLine = true;
+                    pos = 0;
+                } else {
+                    processByte(c);
+                }
+                continue;
+            }
+
+            if (c == '\n') {
+                uint8_t response = 0;
+                size_t payloadLen = 0;
+                inHexLine = false;
+
+                if (!parseHexLine(line, pos, response, payload, sizeof(payload), payloadLen)) {
+                    return HexError::CHECKSUM;
+                }
+
+                if (response == 0x4) {
+                    return HexError::DEVICE_ERROR;
+                }
+
+                if (response != expectedResponse) {
+                    continue;
+                }
+
+                if (payloadLen < 3) {
+                    return HexError::BAD_RESPONSE;
+                }
+
+                const uint16_t responseRegister = static_cast<uint16_t>(payload[0]) |
+                                                  (static_cast<uint16_t>(payload[1]) << 8);
+                if (responseRegister != expectedRegister) {
+                    continue;
+                }
+
+                const uint8_t flags = payload[2];
+                if (replyFlags) {
+                    *replyFlags = flags;
+                }
+                if (flags & 0x01) {
+                    return HexError::UNKNOWN_ID;
+                }
+                if (flags & 0x02) {
+                    return HexError::NOT_SUPPORTED;
+                }
+                if (flags & 0x04) {
+                    return HexError::PARAMETER_ERROR;
+                }
+                if (flags != 0) {
+                    return HexError::BAD_RESPONSE;
+                }
+
+                valueLen = payloadLen - 3;
+                if (valueLen > maxLen) {
+                    valueLen = 0;
+                    return HexError::BUFFER_TOO_SMALL;
+                }
+
+                if (valueLen > 0 && value) {
+                    memcpy(value, payload + 3, valueLen);
+                }
+                return HexError::OK;
+            }
+
+            if (c == '\r') {
+                continue;
+            }
+
+            if (pos < sizeof(line) - 1) {
+                line[pos++] = static_cast<char>(c);
+            } else {
+                inHexLine = false;
+                pos = 0;
+            }
+        }
+
+        delay(5);
+    }
+
+    return HexError::TIMEOUT;
+}
+
 void VEDirectChargeController::processByte(uint8_t inbyte)
 {
     if ((inbyte == ':') && (m_state != ParseState::Checksum)) {
@@ -295,4 +500,55 @@ bool VEDirectChargeController::isChargingState(uint16_t state)
     default:
         return false;
     }
+}
+
+int8_t VEDirectChargeController::hexNibble(uint8_t c)
+{
+    if (c >= '0' && c <= '9') {
+        return static_cast<int8_t>(c - '0');
+    }
+    c = static_cast<uint8_t>(toupper(c));
+    if (c >= 'A' && c <= 'F') {
+        return static_cast<int8_t>(c - 'A' + 10);
+    }
+
+    return -1;
+}
+
+bool VEDirectChargeController::parseHexLine(const char *line, size_t lineLen, uint8_t &response, uint8_t *payload,
+                                            size_t maxPayloadLen, size_t &payloadLen)
+{
+    payloadLen = 0;
+    if (!line || lineLen < 3 || ((lineLen - 1) % 2) != 0) {
+        return false;
+    }
+
+    int8_t cmd = hexNibble(static_cast<uint8_t>(line[0]));
+    if (cmd < 0) {
+        return false;
+    }
+
+    response = static_cast<uint8_t>(cmd);
+    uint8_t sum = response;
+    const size_t byteCount = (lineLen - 1) / 2;
+    if (byteCount == 0 || byteCount - 1 > maxPayloadLen) {
+        return false;
+    }
+
+    for (size_t i = 0; i < byteCount; ++i) {
+        int8_t high = hexNibble(static_cast<uint8_t>(line[1 + (i * 2)]));
+        int8_t low = hexNibble(static_cast<uint8_t>(line[2 + (i * 2)]));
+        if (high < 0 || low < 0) {
+            return false;
+        }
+
+        const uint8_t value = static_cast<uint8_t>((high << 4) | low);
+        sum = static_cast<uint8_t>(sum + value);
+
+        if (i < byteCount - 1) {
+            payload[payloadLen++] = value;
+        }
+    }
+
+    return sum == 0x55;
 }

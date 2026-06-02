@@ -31,9 +31,25 @@ struct VEDirectStatus {
 
 class VEDirectChargeController {
   public:
+    enum class HexError : uint8_t {
+        OK,
+        TIMEOUT,
+        CHECKSUM,
+        BAD_RESPONSE,
+        DEVICE_ERROR,
+        UNKNOWN_ID,
+        NOT_SUPPORTED,
+        PARAMETER_ERROR,
+        BUFFER_TOO_SMALL,
+    };
+
     explicit VEDirectChargeController(Stream &serial);
 
     bool poll();
+    HexError getRegister(uint16_t id, uint8_t *value, size_t maxLen, size_t &valueLen, uint32_t timeoutMs = 1500,
+                         uint8_t *replyFlags = nullptr);
+    HexError setRegisterU8(uint16_t id, uint8_t value, uint32_t timeoutMs = 1500, uint8_t *replyFlags = nullptr);
+    static const char *hexErrorName(HexError err);
 
     bool hasValidStatus() const { return m_status.valid; }
     VEDirectStatus getStatusSnapshot() const { return m_status; }
@@ -52,8 +68,14 @@ class VEDirectChargeController {
     void resetFrame();
     void handleRecord(const char *name, const char *value);
     void finishFrame(bool valid);
+    bool sendHexFrame(uint8_t command, const uint8_t *payload, size_t payloadLen);
+    HexError readHexResponse(uint8_t expectedResponse, uint16_t expectedRegister, uint8_t *value, size_t maxLen,
+                             size_t &valueLen, uint32_t timeoutMs, uint8_t *replyFlags);
     static bool parseInt32(const char *value, int32_t &out);
     static bool isChargingState(uint16_t state);
+    static int8_t hexNibble(uint8_t c);
+    static bool parseHexLine(const char *line, size_t lineLen, uint8_t &response, uint8_t *payload, size_t maxPayloadLen,
+                             size_t &payloadLen);
 
     Stream &m_serial;
     VEDirectStatus m_status;

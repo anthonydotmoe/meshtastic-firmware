@@ -5,6 +5,7 @@
 #include "NodeDB.h"
 #include "RTC.h"
 #include "Router.h"
+#include "VEDirectCommands.h"
 #include "configuration.h"
 #include <Arduino.h>
 #include <Throttle.h>
@@ -138,6 +139,7 @@ SerialModuleRadio::SerialModuleRadio() : MeshModule("SerialModuleRadio")
     switch (moduleConfig.serial.mode) {
     case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_TEXTMSG:
     case (meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9:
+    case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_VE_DIRECT:
         ourPortNum = meshtastic_PortNum_TEXT_MESSAGE_APP;
         break;
     case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_NMEA:
@@ -547,6 +549,8 @@ ProcessMessage SerialModuleRadio::handleReceived(const meshtastic_MeshPacket &mp
 
                 // We consumed this packet as a command
                 return ProcessMessage::STOP;
+            } else if (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_VE_DIRECT) {
+                return handleVEDirectCommandReceived(mp);
             }
         }
     }
@@ -795,6 +799,8 @@ void SerialModule::processRenogySerial()
 
 void SerialModule::processVEDirectSerial()
 {
+    processVEDirectCommandQueue(g_vedirect, serialModuleRadio);
+
     if (g_vedirect) {
         g_vedirect->poll();
     } else {
