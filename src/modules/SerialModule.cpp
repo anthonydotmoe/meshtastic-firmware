@@ -10,7 +10,9 @@
 #include <Throttle.h>
 
 #include "RenogyChargeController.h"
+#include "VEDirectChargeController.h"
 RenogyChargeController *g_renogy = nullptr;
+VEDirectChargeController *g_vedirect = nullptr;
 static constexpr uint8_t RENOGY_SLAVEID = 0xFF;
 
 struct RenogyCommand {
@@ -253,7 +255,18 @@ int32_t SerialModule::runOnce()
 #endif
             serialModuleRadio = new SerialModuleRadio();
 
-            if (moduleConfig.serial.mode == (_meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9) {
+            if (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_VE_DIRECT) {
+                LOG_INFO("Init VE.Direct serial controller: baud=%lu rxd=%d txd=%d timeout=%u",
+                         static_cast<unsigned long>(baud), moduleConfig.serial.rxd, moduleConfig.serial.txd,
+                         moduleConfig.serial.timeout > 0 ? moduleConfig.serial.timeout : TIMEOUT);
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+                g_vedirect = new VEDirectChargeController(Serial1);
+#elif defined(ARCH_ESP32)
+                g_vedirect = new VEDirectChargeController(Serial2);
+#else
+                g_vedirect = new VEDirectChargeController(Serial2);
+#endif
+            } else if (moduleConfig.serial.mode == (_meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9) {
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
                 g_renogy = new RenogyChargeController(Serial1, RENOGY_SLAVEID);
 #elif defined(ARCH_ESP32)
@@ -311,6 +324,9 @@ int32_t SerialModule::runOnce()
 #endif
             else if ((moduleConfig.serial.mode == (meshtastic_ModuleConfig_SerialConfig_Serial_Mode)9)) {
                 processRenogySerial();
+            }
+            else if ((moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_VE_DIRECT)) {
+                processVEDirectSerial();
             }
             else {
 #if defined(CONFIG_IDF_TARGET_ESP32C6)
@@ -544,6 +560,11 @@ ProcessMessage SerialModuleRadio::handleReceived(const meshtastic_MeshPacket &mp
  */
 uint32_t SerialModule::getBaudRate()
 {
+    if (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_VE_DIRECT &&
+        moduleConfig.serial.baud == meshtastic_ModuleConfig_SerialConfig_Serial_Baud_BAUD_DEFAULT) {
+        return 19200;
+    }
+
     if (moduleConfig.serial.baud == meshtastic_ModuleConfig_SerialConfig_Serial_Baud_BAUD_110) {
         return 110;
     } else if (moduleConfig.serial.baud == meshtastic_ModuleConfig_SerialConfig_Serial_Baud_BAUD_300) {
@@ -770,6 +791,15 @@ void SerialModule::processRenogySerial()
     }
 
     //TODO: Service any queued commands
+}
+
+void SerialModule::processVEDirectSerial()
+{
+    if (g_vedirect) {
+        g_vedirect->poll();
+    } else {
+        LOG_WARN("VE.Direct serial mode active but controller is not initialized");
+    }
 }
 
 /**

@@ -33,6 +33,7 @@ class SerialModule : public StreamAPI, private concurrency::OSThread
     void sendTelemetry(meshtastic_Telemetry m);
     void processWXSerial();
     void processRenogySerial();
+    void processVEDirectSerial();
 };
 
 extern SerialModule *serialModule;

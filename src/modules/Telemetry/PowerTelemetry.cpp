@@ -16,8 +16,10 @@
 #include "sleep.h"
 #include "target_specific.h"
 #include "RenogyChargeController.h"
+#include "VEDirectChargeController.h"
 
 extern RenogyChargeController *g_renogy;
+extern VEDirectChargeController *g_vedirect;
 
 #define FAILED_STATE_SENSOR_READ_MULTIPLIER 10
 #define DISPLAY_RECEIVEID_MEASUREMENTS_ON_SCREEN true
@@ -80,8 +82,8 @@ int32_t PowerTelemetryModule::runOnce()
                 result = max17048Sensor.isInitialized() ? 0 : max17048Sensor.runOnce();
         }
 
-        // Keep module alive if g_renogy
-        if (g_renogy) {
+        // Keep module alive if a serial charge controller is providing power metrics.
+        if (g_renogy || g_vedirect) {
             result = 0;
         }
 
@@ -234,6 +236,38 @@ bool PowerTelemetryModule::getPowerTelemetry(meshtastic_Telemetry *m)
             m->variant.power_metrics.ch2_current = s.loadCurrent_mA;
             m->variant.power_metrics.ch3_voltage = s.panelVoltage_mV / 1000.0f;
             m->variant.power_metrics.ch3_current = s.panelCurrent_mA;
+
+            valid = true;
+        }
+    }
+
+    if (g_vedirect) {
+        auto s = g_vedirect->getStatusSnapshot();
+        if (s.valid) {
+            if (s.hasBatteryVoltage) {
+                m->variant.power_metrics.has_ch1_voltage = true;
+                m->variant.power_metrics.ch1_voltage = s.batteryVoltage_mV / 1000.0f;
+            }
+            if (s.hasBatteryCurrent) {
+                m->variant.power_metrics.has_ch1_current = true;
+                m->variant.power_metrics.ch1_current = s.batteryCurrent_mA;
+            }
+            if (s.hasLoadVoltage) {
+                m->variant.power_metrics.has_ch2_voltage = true;
+                m->variant.power_metrics.ch2_voltage = s.loadVoltage_mV / 1000.0f;
+            }
+            if (s.hasLoadCurrent) {
+                m->variant.power_metrics.has_ch2_current = true;
+                m->variant.power_metrics.ch2_current = s.loadCurrent_mA;
+            }
+            if (s.hasPanelVoltage) {
+                m->variant.power_metrics.has_ch3_voltage = true;
+                m->variant.power_metrics.ch3_voltage = s.panelVoltage_mV / 1000.0f;
+            }
+            if (s.hasPanelCurrent) {
+                m->variant.power_metrics.has_ch3_current = true;
+                m->variant.power_metrics.ch3_current = s.panelCurrent_mA;
+            }
 
             valid = true;
         }
