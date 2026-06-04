@@ -38,6 +38,56 @@ bool VEDirectChargeController::poll()
     return m_updated;
 }
 
+VEDirectChargeController::HexError VEDirectChargeController::getProductId(uint16_t &productId, uint32_t timeoutMs)
+{
+    uint8_t payload[4] = {0};
+    size_t payloadLen = 0;
+
+    while (m_serial.available()) {
+        processByte(static_cast<uint8_t>(m_serial.read()));
+    }
+
+    if (!sendHexFrame(0x4, nullptr, 0)) {
+        return HexError::BAD_RESPONSE;
+    }
+
+    HexError err = readHexCommandResponse(0x1, payload, sizeof(payload), payloadLen, timeoutMs);
+    if (err != HexError::OK) {
+        return err;
+    }
+    if (payloadLen < 2) {
+        return HexError::BAD_RESPONSE;
+    }
+
+    productId = static_cast<uint16_t>(payload[0]) | (static_cast<uint16_t>(payload[1]) << 8);
+    return HexError::OK;
+}
+
+VEDirectChargeController::HexError VEDirectChargeController::getAppVersion(uint16_t &version, uint32_t timeoutMs)
+{
+    uint8_t payload[2] = {0};
+    size_t payloadLen = 0;
+
+    while (m_serial.available()) {
+        processByte(static_cast<uint8_t>(m_serial.read()));
+    }
+
+    if (!sendHexFrame(0x3, nullptr, 0)) {
+        return HexError::BAD_RESPONSE;
+    }
+
+    HexError err = readHexCommandResponse(0x1, payload, sizeof(payload), payloadLen, timeoutMs);
+    if (err != HexError::OK) {
+        return err;
+    }
+    if (payloadLen < 2) {
+        return HexError::BAD_RESPONSE;
+    }
+
+    version = static_cast<uint16_t>(payload[0]) | (static_cast<uint16_t>(payload[1]) << 8);
+    return HexError::OK;
+}
+
 VEDirectChargeController::HexError VEDirectChargeController::getRegister(uint16_t id, uint8_t *value, size_t maxLen,
                                                                           size_t &valueLen, uint32_t timeoutMs,
                                                                           uint8_t *replyFlags)
@@ -138,6 +188,65 @@ bool VEDirectChargeController::sendHexFrame(uint8_t command, const uint8_t *payl
     m_serial.write(HEX_DIGITS[checksum & 0x0F]);
     m_serial.write('\n');
     return true;
+}
+
+VEDirectChargeController::HexError VEDirectChargeController::readHexCommandResponse(uint8_t expectedResponse, uint8_t *payload,
+                                                                                    size_t maxPayloadLen, size_t &payloadLen,
+                                                                                    uint32_t timeoutMs)
+{
+    char line[128] = {0};
+    size_t pos = 0;
+    bool inHexLine = false;
+    const uint32_t start = millis();
+
+    payloadLen = 0;
+
+    while (millis() - start < timeoutMs) {
+        while (m_serial.available()) {
+            uint8_t c = static_cast<uint8_t>(m_serial.read());
+
+            if (!inHexLine) {
+                if (c == ':') {
+                    inHexLine = true;
+                    pos = 0;
+                } else {
+                    processByte(c);
+                }
+                continue;
+            }
+
+            if (c == '\n') {
+                uint8_t response = 0;
+                inHexLine = false;
+
+                if (!parseHexLine(line, pos, response, payload, maxPayloadLen, payloadLen)) {
+                    return HexError::CHECKSUM;
+                }
+                if (response == 0x4) {
+                    return HexError::DEVICE_ERROR;
+                }
+                if (response == expectedResponse) {
+                    return HexError::OK;
+                }
+                continue;
+            }
+
+            if (c == '\r') {
+                continue;
+            }
+
+            if (pos < sizeof(line) - 1) {
+                line[pos++] = static_cast<char>(c);
+            } else {
+                inHexLine = false;
+                pos = 0;
+            }
+        }
+
+        delay(5);
+    }
+
+    return HexError::TIMEOUT;
 }
 
 VEDirectChargeController::HexError VEDirectChargeController::readHexResponse(uint8_t expectedResponse, uint16_t expectedRegister,

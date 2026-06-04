@@ -46,6 +46,8 @@ class VEDirectChargeController {
     explicit VEDirectChargeController(Stream &serial);
 
     bool poll();
+    HexError getProductId(uint16_t &productId, uint32_t timeoutMs = 1000);
+    HexError getAppVersion(uint16_t &version, uint32_t timeoutMs = 1000);
     HexError getRegister(uint16_t id, uint8_t *value, size_t maxLen, size_t &valueLen, uint32_t timeoutMs = 1500,
                          uint8_t *replyFlags = nullptr);
     HexError setRegisterU8(uint16_t id, uint8_t value, uint32_t timeoutMs = 1500, uint8_t *replyFlags = nullptr);
@@ -69,6 +71,8 @@ class VEDirectChargeController {
     void handleRecord(const char *name, const char *value);
     void finishFrame(bool valid);
     bool sendHexFrame(uint8_t command, const uint8_t *payload, size_t payloadLen);
+    HexError readHexCommandResponse(uint8_t expectedResponse, uint8_t *payload, size_t maxPayloadLen, size_t &payloadLen,
+                                    uint32_t timeoutMs);
     HexError readHexResponse(uint8_t expectedResponse, uint16_t expectedRegister, uint8_t *value, size_t maxLen,
                              size_t &valueLen, uint32_t timeoutMs, uint8_t *replyFlags);
     static bool parseInt32(const char *value, int32_t &out);

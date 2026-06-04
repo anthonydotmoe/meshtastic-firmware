@@ -9,6 +9,7 @@
 #include "VEDirectChargeController.h"
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <string.h>
 #include <strings.h>
 
@@ -17,11 +18,14 @@ namespace
 constexpr uint16_t VEDIRECT_REG_LOAD_CONTROL = 0xEDAB;
 constexpr uint16_t VEDIRECT_REG_CHARGER_ERROR = 0xEDDA;
 constexpr uint16_t VEDIRECT_REG_TOTAL_HISTORY = 0x104F;
+constexpr uint16_t VEDIRECT_REG_DEVICE_MODE = 0x0200;
+constexpr uint16_t VEDIRECT_REG_DEVICE_STATE = 0x0201;
 
 struct VEDirectCommand {
     enum class Type : uint8_t {
         Load,
         Errors,
+        Status,
     } type;
 
     uint8_t loadControl = 0;
@@ -32,9 +36,58 @@ struct VEDirectCommand {
 volatile bool s_vedirectCmdPending = false;
 VEDirectCommand s_vedirectCmd;
 
+struct ProductNameMapping {
+    uint16_t productId;
+    uint8_t familyId;
+    uint8_t typeId;
+    uint8_t ratingId;
+    uint8_t revId;
+};
+
+static const ProductNameMapping PRODUCT_NAME_MAPPINGS[] = {
+    {0x0300, 0, 0, 0, 0},   {0xA040, 0, 0, 3, 0},   {0xA041, 0, 0, 9, 0},   {0xA042, 0, 0, 2, 0},
+    {0xA043, 0, 0, 4, 0},   {0xA044, 0, 0, 7, 0},   {0xA045, 0, 0, 8, 0},   {0xA046, 0, 0, 12, 0},
+    {0xA047, 0, 0, 14, 0},  {0xA048, 0, 0, 3, 1},   {0xA049, 0, 0, 8, 1},   {0xA04A, 0, 0, 7, 1},
+    {0xA04B, 0, 0, 9, 1},   {0xA04C, 0, 0, 1, 0},   {0xA04D, 0, 0, 10, 0},  {0xA04E, 0, 0, 11, 0},
+    {0xA04F, 0, 0, 13, 0},  {0xA050, 1, 0, 19, 0},  {0xA051, 1, 0, 14, 0},  {0xA052, 1, 0, 13, 0},
+    {0xA053, 1, 0, 2, 0},   {0xA054, 1, 0, 1, 0},   {0xA055, 1, 0, 4, 0},   {0xA056, 1, 0, 7, 0},
+    {0xA057, 1, 0, 8, 0},   {0xA058, 1, 0, 9, 0},   {0xA059, 1, 0, 14, 1},  {0xA05A, 1, 0, 13, 1},
+    {0xA05B, 1, 0, 17, 0},  {0xA05C, 1, 0, 18, 0},  {0xA05D, 1, 0, 16, 0},  {0xA05E, 1, 0, 15, 0},
+    {0xA05F, 1, 0, 5, 0},   {0xA060, 1, 0, 6, 0},   {0xA061, 1, 0, 10, 0},  {0xA062, 1, 0, 11, 0},
+    {0xA063, 1, 0, 12, 0},  {0xA064, 1, 0, 18, 1},  {0xA065, 1, 0, 19, 1},  {0xA066, 0, 0, 5, 0},
+    {0xA067, 0, 0, 6, 0},   {0xA068, 1, 0, 16, 1},  {0xA069, 1, 0, 17, 1},  {0xA06A, 1, 0, 10, 1},
+    {0xA06B, 1, 0, 11, 1},  {0xA06C, 1, 0, 12, 1},  {0xA06D, 1, 0, 13, 1},  {0xA06E, 1, 0, 14, 2},
+    {0xA06F, 0, 0, 10, 1},  {0xA070, 0, 0, 11, 1},  {0xA071, 0, 0, 12, 1},  {0xA072, 0, 0, 10, 2},
+    {0xA073, 1, 0, 10, 2},  {0xA074, 1, 0, 1, 1},   {0xA075, 1, 0, 2, 1},   {0xA076, 0, 0, 7, 2},
+    {0xA077, 0, 0, 8, 2},   {0xA078, 0, 0, 9, 1},   {0xA079, 0, 0, 1, 1},   {0xA07A, 0, 0, 2, 1},
+    {0xA07B, 0, 0, 4, 1},   {0xA07C, 0, 0, 1, 2},   {0xA07D, 0, 0, 2, 2},   {0xA07E, 2, 0, 7, 0},
+    {0xA102, 1, 1, 12, 0},  {0xA103, 1, 1, 10, 0},  {0xA104, 1, 1, 11, 0},  {0xA105, 1, 1, 13, 0},
+    {0xA106, 1, 1, 14, 0},  {0xA107, 1, 1, 15, 0},  {0xA108, 1, 1, 16, 0},  {0xA109, 1, 1, 17, 0},
+    {0xA10A, 1, 1, 18, 0},  {0xA10B, 1, 1, 19, 0},  {0xA10C, 1, 1, 12, 1},  {0xA10D, 1, 1, 13, 1},
+    {0xA10E, 1, 1, 14, 1},  {0xA10F, 0, 1, 14, 0},  {0xA110, 1, 2, 20, 0},  {0xA111, 1, 2, 21, 0},
+    {0xA112, 0, 1, 17, 0},  {0xA113, 0, 1, 19, 0},  {0xA114, 1, 1, 17, 1},  {0xA115, 1, 1, 19, 1},
+    {0xA116, 1, 1, 18, 1},  {0xA117, 0, 1, 14, 1},
+};
+
 bool hasExtraToken(char *saveptr)
 {
     return strtok_r(nullptr, " \t\r\n", &saveptr) != nullptr;
+}
+
+void appendFormat(char *reply, size_t replySize, size_t &pos, const char *format, ...)
+{
+    if (pos >= replySize) {
+        return;
+    }
+
+    va_list args;
+    va_start(args, format);
+    int written = vsnprintf(reply + pos, replySize - pos, format, args);
+    va_end(args);
+
+    if (written > 0) {
+        pos += static_cast<size_t>(written);
+    }
 }
 
 void lowercase(char *s)
@@ -43,6 +96,134 @@ void lowercase(char *s)
         *s = static_cast<char>(tolower(*s));
         ++s;
     }
+}
+
+const ProductNameMapping *findProductNameMapping(uint16_t productId)
+{
+    for (const auto &mapping : PRODUCT_NAME_MAPPINGS) {
+        if (mapping.productId == productId) {
+            return &mapping;
+        }
+    }
+
+    return nullptr;
+}
+
+const char *productFamilyName(uint8_t id)
+{
+    switch (id) {
+    case 0:
+        return "BlueSolar";
+    case 1:
+        return "SmartSolar";
+    case 2:
+        return "SmartSolar Charger";
+    default:
+        return "Victron";
+    }
+}
+
+const char *productTypeName(uint8_t id)
+{
+    switch (id) {
+    case 0:
+        return "MPPT";
+    case 1:
+        return "MPPT VE.Can";
+    case 2:
+        return "MPPT RS";
+    default:
+        return "";
+    }
+}
+
+const char *productRatingName(uint8_t id)
+{
+    switch (id) {
+    case 0:
+        return "70|15";
+    case 1:
+        return "75|10";
+    case 2:
+        return "75|15";
+    case 3:
+        return "75|50";
+    case 4:
+        return "100|15";
+    case 5:
+        return "100|20";
+    case 6:
+        return "100|20 48V";
+    case 7:
+        return "100|30";
+    case 8:
+        return "100|50";
+    case 9:
+        return "150|35";
+    case 10:
+        return "150|45";
+    case 11:
+        return "150|60";
+    case 12:
+        return "150|70";
+    case 13:
+        return "150|85";
+    case 14:
+        return "150|100";
+    case 15:
+        return "250|45";
+    case 16:
+        return "250|60";
+    case 17:
+        return "250|70";
+    case 18:
+        return "250|85";
+    case 19:
+        return "250|100";
+    case 20:
+        return "450|100";
+    case 21:
+        return "450|200";
+    default:
+        return "";
+    }
+}
+
+const char *productRevName(uint8_t id)
+{
+    switch (id) {
+    case 1:
+        return "rev2";
+    case 2:
+        return "rev3";
+    default:
+        return "";
+    }
+}
+
+void formatProductName(uint16_t productId, char *out, size_t outSize)
+{
+    const ProductNameMapping *mapping = findProductNameMapping(productId);
+    if (!mapping) {
+        snprintf(out, outSize, "Victron 0x%04X", productId);
+        return;
+    }
+
+    const char *rev = productRevName(mapping->revId);
+    snprintf(out, outSize, "%s %s %s%s%s", productFamilyName(mapping->familyId), productTypeName(mapping->typeId),
+             productRatingName(mapping->ratingId), rev[0] ? " " : "", rev);
+}
+
+void formatFirmwareVersion(uint16_t version, char *out, size_t outSize)
+{
+    snprintf(out, outSize, "%u.%02u", static_cast<unsigned>((version >> 8) & 0x3F), static_cast<unsigned>(version & 0xFF));
+}
+
+bool readRegisterU8(VEDirectChargeController *controller, uint16_t reg, uint8_t &out)
+{
+    size_t len = 0;
+    VEDirectChargeController::HexError err = controller->getRegister(reg, &out, sizeof(out), len, 1000);
+    return err == VEDirectChargeController::HexError::OK && len >= 1;
 }
 
 bool parseCommandText(const uint8_t *data, size_t len, VEDirectCommand &out, bool &isHelp)
@@ -79,6 +260,14 @@ bool parseCommandText(const uint8_t *data, size_t len, VEDirectCommand &out, boo
         return true;
     }
 
+    if (strcmp(cmd, "status") == 0) {
+        if (hasExtraToken(saveptr)) {
+            return false;
+        }
+        out.type = VEDirectCommand::Type::Status;
+        return true;
+    }
+
     if (strcmp(cmd, "load") == 0) {
         char *mode = strtok_r(nullptr, " \t\r\n", &saveptr);
         if (!mode || hasExtraToken(saveptr)) {
@@ -108,7 +297,7 @@ bool parseCommandText(const uint8_t *data, size_t len, VEDirectCommand &out, boo
 void sendHelp(NodeNum to)
 {
     if (serialModuleRadio) {
-        serialModuleRadio->sendText(to, "VE.Direct: help, load off|auto|force-on, errors");
+        serialModuleRadio->sendText(to, "VE.Direct: help, status, load off|auto|force-on, errors");
     }
 }
 
@@ -189,6 +378,126 @@ const char *errorMeaning(uint8_t code)
     default:
         return "unknown";
     }
+}
+
+const char *chargeStateName(uint8_t state)
+{
+    switch (state) {
+    case 0:
+        return "NOT_CHARGING";
+    case 2:
+        return "FAULT";
+    case 3:
+        return "BULK";
+    case 4:
+        return "ABSORPTION";
+    case 5:
+        return "FLOAT";
+    case 6:
+        return "STORAGE";
+    case 7:
+        return "EQUALISE";
+    case 245:
+        return "WAKE-UP";
+    case 246:
+        return "REPEATED ABS";
+    case 247:
+        return "AUTO EQUALISE";
+    case 248:
+        return "BATTERYSAFE";
+    case 250:
+        return "BLOCKED";
+    case 252:
+        return "EXT CONTROL";
+    case 255:
+        return "UNAVAILABLE";
+    default:
+        return "?";
+    }
+}
+
+const char *deviceModeName(uint8_t mode)
+{
+    switch (mode) {
+    case 0:
+    case 4:
+        return "charger off";
+    case 1:
+        return "charger on";
+    default:
+        return "?";
+    }
+}
+
+const char *loadControlName(uint8_t control)
+{
+    switch (control & 0x0F) {
+    case 0:
+        return "OFF";
+    case 1:
+        return "AUTO";
+    case 2:
+        return "ALT1";
+    case 3:
+        return "ALT2";
+    case 4:
+        return "FORCE-ON";
+    case 5:
+        return "USER1";
+    case 6:
+        return "USER2";
+    case 7:
+        return "AES";
+    default:
+        return "?";
+    }
+}
+
+void appendVoltage(char *reply, size_t replySize, size_t &pos, bool hasValue, uint32_t mV)
+{
+    if (!hasValue) {
+        appendFormat(reply, replySize, pos, "? V");
+        return;
+    }
+
+    appendFormat(reply, replySize, pos, "%lu.%02lu V", static_cast<unsigned long>(mV / 1000),
+                 static_cast<unsigned long>((mV % 1000) / 10));
+}
+
+void appendCurrent(char *reply, size_t replySize, size_t &pos, bool hasValue, int32_t mA, bool includeSign)
+{
+    if (!hasValue) {
+        appendFormat(reply, replySize, pos, "? A");
+        return;
+    }
+
+    const bool negative = mA < 0;
+    uint32_t magnitude = negative ? static_cast<uint32_t>(-mA) : static_cast<uint32_t>(mA);
+    if (includeSign) {
+        appendFormat(reply, replySize, pos, "%c", negative ? '-' : '+');
+    } else if (negative) {
+        appendFormat(reply, replySize, pos, "-");
+    }
+    appendFormat(reply, replySize, pos, "%lu.%02lu A", static_cast<unsigned long>(magnitude / 1000),
+                 static_cast<unsigned long>((magnitude % 1000) / 10));
+}
+
+void appendPower(char *reply, size_t replySize, size_t &pos, const VEDirectStatus &status)
+{
+    if (status.hasPanelPower) {
+        appendFormat(reply, replySize, pos, "%ld W", static_cast<long>(status.panelPower_W));
+        return;
+    }
+
+    if (status.hasPanelVoltage && status.hasPanelCurrent) {
+        const int32_t powerDeciW =
+            static_cast<int32_t>((static_cast<int64_t>(status.panelVoltage_mV) * status.panelCurrent_mA) / 100000000LL);
+        appendFormat(reply, replySize, pos, "%ld.%ld W", static_cast<long>(powerDeciW / 10),
+                     static_cast<long>(abs(powerDeciW % 10)));
+        return;
+    }
+
+    appendFormat(reply, replySize, pos, "? W");
 }
 
 size_t appendError(char *reply, size_t replySize, size_t pos, uint8_t code)
@@ -294,6 +603,78 @@ void processErrorsCommand(const VEDirectCommand &cmd, VEDirectChargeController *
     }
 }
 
+void processStatusCommand(const VEDirectCommand &cmd, VEDirectChargeController *controller, SerialModuleRadio *radio)
+{
+    controller->poll();
+
+    VEDirectStatus status = controller->getStatusSnapshot();
+    uint16_t productId = 0;
+    uint16_t fwVersion = 0;
+    uint8_t deviceMode = 0;
+    uint8_t deviceState = 0;
+    uint8_t loadControl = 0;
+    uint8_t currentError = 0;
+
+    bool hasProductId =
+        controller->getProductId(productId) == VEDirectChargeController::HexError::OK;
+    bool hasFwVersion =
+        controller->getAppVersion(fwVersion) == VEDirectChargeController::HexError::OK;
+    bool hasDeviceMode = readRegisterU8(controller, VEDIRECT_REG_DEVICE_MODE, deviceMode);
+    bool hasDeviceState = readRegisterU8(controller, VEDIRECT_REG_DEVICE_STATE, deviceState);
+    bool hasLoadControl = readRegisterU8(controller, VEDIRECT_REG_LOAD_CONTROL, loadControl);
+    bool hasCurrentError = readRegisterU8(controller, VEDIRECT_REG_CHARGER_ERROR, currentError);
+
+    char productName[48] = "VE.Direct";
+    char fwText[8] = "?";
+    if (hasProductId) {
+        formatProductName(productId, productName, sizeof(productName));
+    }
+    if (hasFwVersion) {
+        formatFirmwareVersion(fwVersion, fwText, sizeof(fwText));
+    }
+
+    char reply[240] = {0};
+    size_t pos = 0;
+
+    appendFormat(reply, sizeof(reply), pos, "%s FW:%s\n", productName, fwText);
+
+    appendFormat(reply, sizeof(reply), pos, "Battery: ");
+    appendVoltage(reply, sizeof(reply), pos, status.hasBatteryVoltage, status.batteryVoltage_mV);
+    appendFormat(reply, sizeof(reply), pos, ", %s ", status.hasBatteryCurrent ? (status.batteryCurrent_mA < 0 ? "discharge" : "charge") : "current");
+    appendCurrent(reply, sizeof(reply), pos, status.hasBatteryCurrent, status.batteryCurrent_mA, status.hasBatteryCurrent);
+    appendFormat(reply, sizeof(reply), pos, "\n");
+
+    appendFormat(reply, sizeof(reply), pos, "PV: ");
+    appendVoltage(reply, sizeof(reply), pos, status.hasPanelVoltage, status.panelVoltage_mV);
+    appendFormat(reply, sizeof(reply), pos, ", ");
+    appendPower(reply, sizeof(reply), pos, status);
+    appendFormat(reply, sizeof(reply), pos, "\n");
+
+    appendFormat(reply, sizeof(reply), pos, "Load: %s, ", status.hasLoadState ? (status.loadOn ? "ON" : "OFF") : "?");
+    appendVoltage(reply, sizeof(reply), pos, status.hasLoadVoltage, status.loadVoltage_mV);
+    appendFormat(reply, sizeof(reply), pos, ", ");
+    appendCurrent(reply, sizeof(reply), pos, status.hasLoadCurrent, status.loadCurrent_mA, false);
+    appendFormat(reply, sizeof(reply), pos, "\n");
+
+    appendFormat(reply, sizeof(reply), pos, "Mode: %s, state %s\n", hasDeviceMode ? deviceModeName(deviceMode) : "?",
+                 hasDeviceState ? chargeStateName(deviceState)
+                                : (status.hasChargeState ? chargeStateName(static_cast<uint8_t>(status.chargeState)) : "?"));
+
+    appendFormat(reply, sizeof(reply), pos, "Load control: %s%s\n", hasLoadControl ? loadControlName(loadControl) : "?",
+                 (hasLoadControl && (loadControl & 0x80)) ? " timer" : "");
+
+    appendFormat(reply, sizeof(reply), pos, "Error: ");
+    if (!hasCurrentError || currentError == 0) {
+        appendFormat(reply, sizeof(reply), pos, "%s", hasCurrentError ? "none" : "?");
+    } else {
+        pos = appendError(reply, sizeof(reply), pos, currentError);
+    }
+
+    if (radio) {
+        radio->sendText(cmd.requestor, reply);
+    }
+}
+
 } // namespace
 
 ProcessMessage handleVEDirectCommandReceived(const meshtastic_MeshPacket &mp)
@@ -360,6 +741,9 @@ void processVEDirectCommandQueue(VEDirectChargeController *controller, SerialMod
         break;
     case VEDirectCommand::Type::Errors:
         processErrorsCommand(cmd, controller, radio);
+        break;
+    case VEDirectCommand::Type::Status:
+        processStatusCommand(cmd, controller, radio);
         break;
     }
 }
