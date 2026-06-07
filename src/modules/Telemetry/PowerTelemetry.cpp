@@ -10,6 +10,7 @@
 #include "PowerTelemetry.h"
 #include "RTC.h"
 #include "Router.h"
+#include "TransmitHistory.h"
 #include "graphics/SharedUIDisplay.h"
 #include "main.h"
 #include "power.h"
@@ -26,6 +27,8 @@ extern VEDirectChargeController *g_vedirect;
 
 #include "graphics/ScreenFonts.h"
 #include <Throttle.h>
+
+static constexpr uint16_t TX_HISTORY_KEY_POWER_TELEMETRY = 0x8005;
 
 namespace graphics
 {
@@ -57,8 +60,9 @@ int32_t PowerTelemetryModule::runOnce()
         return disable();
     }
 
-    uint32_t sendToMeshIntervalMs = Default::getConfiguredOrDefaultMsScaled(
-        moduleConfig.telemetry.power_update_interval, default_telemetry_broadcast_interval_secs, numOnlineNodes);
+    uint32_t sendToMeshIntervalMs = Default::getConfiguredOrDefaultMsScaled(moduleConfig.telemetry.power_update_interval,
+                                                                            default_telemetry_broadcast_interval_secs,
+                                                                            numOnlineNodes, TrafficType::TELEMETRY);
 
     if (firstTime) {
         // This is the first time the OSThread library has called this function, so do some setup
@@ -98,10 +102,12 @@ int32_t PowerTelemetryModule::runOnce()
         if (!moduleConfig.telemetry.power_measurement_enabled)
             return disable();
 
-        if (((lastSentToMesh == 0) || !Throttle::isWithinTimespanMs(lastSentToMesh, sendToMeshIntervalMs)) &&
+        uint32_t lastTelemetry = transmitHistory ? transmitHistory->getLastSentToMeshMillis(TX_HISTORY_KEY_POWER_TELEMETRY) : 0;
+        if (((lastTelemetry == 0) || !Throttle::isWithinTimespanMs(lastTelemetry, sendToMeshIntervalMs)) &&
             airTime->isTxAllowedAirUtil()) {
             sendTelemetry();
-            lastSentToMesh = millis();
+            if (transmitHistory)
+                transmitHistory->setLastSentToMesh(TX_HISTORY_KEY_POWER_TELEMETRY);
         } else if (((lastSentToPhone == 0) || !Throttle::isWithinTimespanMs(lastSentToPhone, sendToPhoneIntervalMs)) &&
                    (service->isToPhoneQueueEmpty())) {
             // Just send to phone when it's not our time to send to mesh yet
@@ -127,7 +133,7 @@ void PowerTelemetryModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *s
     int line = 1;
 
     // === Set Title
-    const char *titleStr = (graphics::isHighResolution) ? "Power Telem." : "Power";
+    const char *titleStr = (graphics::currentResolution == graphics::ScreenResolution::High) ? "Power Telem." : "Power";
 
     // === Header ===
     graphics::drawCommonHeader(display, x, y, titleStr);
@@ -279,6 +285,10 @@ bool PowerTelemetryModule::getPowerTelemetry(meshtastic_Telemetry *m)
 meshtastic_MeshPacket *PowerTelemetryModule::allocReply()
 {
     if (currentRequest) {
+        if (isMultiHopBroadcastRequest() && !isSensorOrRouterRole()) {
+            ignoreRequest = true;
+            return NULL;
+        }
         auto req = *currentRequest;
         const auto &p = req.decoded;
         meshtastic_Telemetry scratch;
