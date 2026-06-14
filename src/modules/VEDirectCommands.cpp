@@ -10,6 +10,7 @@
 
 #include <ctype.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -18,17 +19,24 @@ namespace
 constexpr uint16_t VEDIRECT_REG_LOAD_CONTROL = 0xEDAB;
 constexpr uint16_t VEDIRECT_REG_CHARGER_ERROR = 0xEDDA;
 constexpr uint16_t VEDIRECT_REG_TOTAL_HISTORY = 0x104F;
+constexpr uint16_t VEDIRECT_REG_DAY_HISTORY_BASE = 0x1050;
+constexpr uint16_t VEDIRECT_REG_DAY_HISTORY_MAX = 0x106E;
 constexpr uint16_t VEDIRECT_REG_DEVICE_MODE = 0x0200;
 constexpr uint16_t VEDIRECT_REG_DEVICE_STATE = 0x0201;
+constexpr uint8_t VEDIRECT_MAX_HISTORY_DAY = VEDIRECT_REG_DAY_HISTORY_MAX - VEDIRECT_REG_DAY_HISTORY_BASE;
+constexpr size_t VEDIRECT_DAY_HISTORY_LEN = 34;
+constexpr size_t VEDIRECT_HISTORY_REPLY_MAX_BYTES = 200;
 
 struct VEDirectCommand {
     enum class Type : uint8_t {
         Load,
         Errors,
         Status,
+        History,
     } type;
 
     uint8_t loadControl = 0;
+    uint8_t historyDay = 0;
     bool forceOn = false;
     NodeNum requestor = 0;
 };
@@ -72,6 +80,26 @@ static const ProductNameMapping PRODUCT_NAME_MAPPINGS[] = {
 bool hasExtraToken(char *saveptr)
 {
     return strtok_r(nullptr, " \t\r\n", &saveptr) != nullptr;
+}
+
+bool parseHistoryDay(const char *token, uint8_t &out)
+{
+    out = 0;
+    if (!token) {
+        return true;
+    }
+
+    char *end = nullptr;
+    long day = strtol(token, &end, 0);
+    if (end == token || *end != '\0' || day < 0) {
+        return false;
+    }
+
+    if (day > VEDIRECT_MAX_HISTORY_DAY) {
+        day = VEDIRECT_MAX_HISTORY_DAY;
+    }
+    out = static_cast<uint8_t>(day);
+    return true;
 }
 
 void appendFormat(char *reply, size_t replySize, size_t &pos, const char *format, ...)
@@ -226,6 +254,17 @@ bool readRegisterU8(VEDirectChargeController *controller, uint16_t reg, uint8_t 
     return err == VEDirectChargeController::HexError::OK && len >= 1;
 }
 
+uint16_t readLe16(const uint8_t *p)
+{
+    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+uint32_t readLe32(const uint8_t *p)
+{
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+           (static_cast<uint32_t>(p[3]) << 24);
+}
+
 bool parseCommandText(const uint8_t *data, size_t len, VEDirectCommand &out, bool &isHelp)
 {
     isHelp = false;
@@ -268,6 +307,16 @@ bool parseCommandText(const uint8_t *data, size_t len, VEDirectCommand &out, boo
         return true;
     }
 
+    if (strcmp(cmd, "history") == 0) {
+        char *day = strtok_r(nullptr, " \t\r\n", &saveptr);
+        if (hasExtraToken(saveptr)) {
+            return false;
+        }
+
+        out.type = VEDirectCommand::Type::History;
+        return parseHistoryDay(day, out.historyDay);
+    }
+
     if (strcmp(cmd, "load") == 0) {
         char *mode = strtok_r(nullptr, " \t\r\n", &saveptr);
         if (!mode || hasExtraToken(saveptr)) {
@@ -297,7 +346,7 @@ bool parseCommandText(const uint8_t *data, size_t len, VEDirectCommand &out, boo
 void sendHelp(NodeNum to)
 {
     if (serialModuleRadio) {
-        serialModuleRadio->sendText(to, "VE.Direct: help, status, load off|auto|force-on, errors");
+        serialModuleRadio->sendText(to, "VE.Direct: help, status, history [day], load off|auto|force-on, errors");
     }
 }
 
@@ -500,6 +549,43 @@ void appendPower(char *reply, size_t replySize, size_t &pos, const VEDirectStatu
     appendFormat(reply, replySize, pos, "? W");
 }
 
+void appendEnergyKwh(char *reply, size_t replySize, size_t &pos, uint32_t centiKwh)
+{
+    appendFormat(reply, replySize, pos, "%lu.%02lukWh", static_cast<unsigned long>(centiKwh / 100),
+                 static_cast<unsigned long>(centiKwh % 100));
+}
+
+void appendSignedEnergyKwh(char *reply, size_t replySize, size_t &pos, int64_t centiKwh)
+{
+    const bool negative = centiKwh < 0;
+    const uint64_t magnitude = negative ? static_cast<uint64_t>(-centiKwh) : static_cast<uint64_t>(centiKwh);
+    appendFormat(reply, replySize, pos, "%c%lu.%02lukWh", negative ? '-' : '+',
+                 static_cast<unsigned long>(magnitude / 100), static_cast<unsigned long>(magnitude % 100));
+}
+
+void appendCentivolts(char *reply, size_t replySize, size_t &pos, uint16_t centivolts)
+{
+    appendFormat(reply, replySize, pos, "%u.%02uV", static_cast<unsigned>(centivolts / 100),
+                 static_cast<unsigned>(centivolts % 100));
+}
+
+void appendDeciamps(char *reply, size_t replySize, size_t &pos, uint16_t deciamps)
+{
+    appendFormat(reply, replySize, pos, "%u.%uA", static_cast<unsigned>(deciamps / 10),
+                 static_cast<unsigned>(deciamps % 10));
+}
+
+void appendMinutes(char *reply, size_t replySize, size_t &pos, uint16_t minutes)
+{
+    const uint16_t hours = minutes / 60;
+    const uint16_t remainingMinutes = minutes % 60;
+
+    if (hours > 0) {
+        appendFormat(reply, replySize, pos, "%uh", static_cast<unsigned>(hours));
+    }
+    appendFormat(reply, replySize, pos, "%um", static_cast<unsigned>(remainingMinutes));
+}
+
 size_t appendError(char *reply, size_t replySize, size_t pos, uint8_t code)
 {
     if (pos >= replySize) {
@@ -534,6 +620,51 @@ void appendHistoryErrors(char *reply, size_t replySize, size_t &pos, const uint8
 
     if (!found) {
         pos += snprintf(reply + pos, replySize - pos, "; history none");
+    }
+}
+
+void appendDayErrors(char *reply, size_t replySize, size_t &pos, const uint8_t *errors, size_t errorLen)
+{
+    bool found = false;
+
+    for (size_t i = 0; i < errorLen; ++i) {
+        if (errors[i] == 0) {
+            continue;
+        }
+        appendFormat(reply, replySize, pos, "%s", found ? ", " : "");
+        pos = appendError(reply, replySize, pos, errors[i]);
+        found = true;
+    }
+
+    if (!found) {
+        appendFormat(reply, replySize, pos, "none");
+    }
+}
+
+void sendHistoryReply(SerialModuleRadio *radio, NodeNum to, const char *reply)
+{
+    if (!radio || !reply) {
+        return;
+    }
+
+    if (strnlen(reply, VEDIRECT_HISTORY_REPLY_MAX_BYTES + 1) <= VEDIRECT_HISTORY_REPLY_MAX_BYTES) {
+        radio->sendText(to, reply);
+        return;
+    }
+
+    const char *lineStart = reply;
+    while (*lineStart) {
+        const char *lineEnd = strchr(lineStart, '\n');
+        const size_t lineLen = lineEnd ? static_cast<size_t>(lineEnd - lineStart) : strlen(lineStart);
+        char line[VEDIRECT_HISTORY_REPLY_MAX_BYTES + 1] = {0};
+        const size_t copyLen = lineLen > VEDIRECT_HISTORY_REPLY_MAX_BYTES ? VEDIRECT_HISTORY_REPLY_MAX_BYTES : lineLen;
+        memcpy(line, lineStart, copyLen);
+        radio->sendText(to, line);
+
+        if (!lineEnd) {
+            break;
+        }
+        lineStart = lineEnd + 1;
     }
 }
 
@@ -601,6 +732,79 @@ void processErrorsCommand(const VEDirectCommand &cmd, VEDirectChargeController *
     if (radio) {
         radio->sendText(cmd.requestor, reply);
     }
+}
+
+void processHistoryCommand(const VEDirectCommand &cmd, VEDirectChargeController *controller, SerialModuleRadio *radio)
+{
+    const uint16_t reg = VEDIRECT_REG_DAY_HISTORY_BASE + cmd.historyDay;
+    uint8_t history[VEDIRECT_DAY_HISTORY_LEN] = {0};
+    size_t historyLen = 0;
+    uint8_t flags = 0;
+    VEDirectChargeController::HexError err =
+        controller->getRegister(reg, history, sizeof(history), historyLen, 1500, &flags);
+
+    if (err != VEDirectChargeController::HexError::OK) {
+        if (err == VEDirectChargeController::HexError::PARAMETER_ERROR && flags == 0x04 && radio) {
+            char reply[80] = {0};
+            snprintf(reply, sizeof(reply), "History day %u: empty", static_cast<unsigned>(cmd.historyDay));
+            radio->sendText(cmd.requestor, reply);
+        } else {
+            replyHexError(radio, cmd.requestor, "history", err);
+        }
+        return;
+    }
+
+    if (historyLen < VEDIRECT_DAY_HISTORY_LEN) {
+        replyHexError(radio, cmd.requestor, "history", VEDirectChargeController::HexError::BAD_RESPONSE);
+        return;
+    }
+
+    const uint32_t yieldCentiKwh = readLe32(history + 1);
+    const uint32_t consumedCentiKwh = readLe32(history + 5);
+    const uint16_t batteryMaxCentivolts = readLe16(history + 9);
+    const uint16_t batteryMinCentivolts = readLe16(history + 11);
+    const uint16_t timeBulkMin = readLe16(history + 18);
+    const uint16_t timeAbsorptionMin = readLe16(history + 20);
+    const uint16_t timeFloatMin = readLe16(history + 22);
+    const uint32_t powerMaxW = readLe32(history + 24);
+    const uint16_t batteryCurrentMaxDeciamps = readLe16(history + 28);
+    const uint16_t panelMaxCentivolts = readLe16(history + 30);
+
+    char reply[384] = {0};
+    size_t pos = 0;
+
+    appendFormat(reply, sizeof(reply), pos, "Yield: ");
+    appendEnergyKwh(reply, sizeof(reply), pos, yieldCentiKwh);
+    appendFormat(reply, sizeof(reply), pos, "\nLoad: ");
+    if (consumedCentiKwh == 0xFFFFFFFF) {
+        appendFormat(reply, sizeof(reply), pos, "n/a");
+    } else {
+        appendEnergyKwh(reply, sizeof(reply), pos, consumedCentiKwh);
+    }
+    appendFormat(reply, sizeof(reply), pos, "\nNet: ");
+    if (consumedCentiKwh == 0xFFFFFFFF) {
+        appendFormat(reply, sizeof(reply), pos, "n/a");
+    } else {
+        appendSignedEnergyKwh(reply, sizeof(reply), pos,
+                              static_cast<int64_t>(yieldCentiKwh) - static_cast<int64_t>(consumedCentiKwh));
+    }
+    appendFormat(reply, sizeof(reply), pos, "\nBatt: ");
+    appendCentivolts(reply, sizeof(reply), pos, batteryMinCentivolts);
+    appendFormat(reply, sizeof(reply), pos, "-");
+    appendCentivolts(reply, sizeof(reply), pos, batteryMaxCentivolts);
+    appendFormat(reply, sizeof(reply), pos, ", Imax ");
+    appendDeciamps(reply, sizeof(reply), pos, batteryCurrentMaxDeciamps);
+    appendFormat(reply, sizeof(reply), pos, "\nPV: Pmax %luW, Vmax ", static_cast<unsigned long>(powerMaxW));
+    appendCentivolts(reply, sizeof(reply), pos, panelMaxCentivolts);
+    appendFormat(reply, sizeof(reply), pos, "\nCharge: bulk ");
+    appendMinutes(reply, sizeof(reply), pos, timeBulkMin);
+    appendFormat(reply, sizeof(reply), pos, ", abs ");
+    appendMinutes(reply, sizeof(reply), pos, timeAbsorptionMin);
+    appendFormat(reply, sizeof(reply), pos, ", float ");
+    appendMinutes(reply, sizeof(reply), pos, timeFloatMin);
+    appendFormat(reply, sizeof(reply), pos, "\nErrors: ");
+    appendDayErrors(reply, sizeof(reply), pos, history + 14, 4);
+    sendHistoryReply(radio, cmd.requestor, reply);
 }
 
 void processStatusCommand(const VEDirectCommand &cmd, VEDirectChargeController *controller, SerialModuleRadio *radio)
@@ -744,6 +948,9 @@ void processVEDirectCommandQueue(VEDirectChargeController *controller, SerialMod
         break;
     case VEDirectCommand::Type::Status:
         processStatusCommand(cmd, controller, radio);
+        break;
+    case VEDirectCommand::Type::History:
+        processHistoryCommand(cmd, controller, radio);
         break;
     }
 }
